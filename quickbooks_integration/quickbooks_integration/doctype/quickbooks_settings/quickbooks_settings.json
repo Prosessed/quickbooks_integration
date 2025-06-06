@@ -1,0 +1,65 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-06-06 13:24:20.752483",
+ "doctype": "DocType",
+ "engine": "InnoDB",
+ "field_order": [
+  "enable",
+  "quickbooks_auth_details_section",
+  "quickbooks_client_id",
+  "quickbooks_client_secret"
+ ],
+ "fields": [
+  {
+   "default": "0",
+   "fieldname": "enable",
+   "fieldtype": "Check",
+   "label": "Enable"
+  },
+  {
+   "fieldname": "quickbooks_auth_details_section",
+   "fieldtype": "Section Break",
+   "label": "QuickBooks Auth Details"
+  },
+  {
+   "fieldname": "quickbooks_client_id",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "QuickBooks Client ID",
+   "reqd": 1
+  },
+  {
+   "fieldname": "quickbooks_client_secret",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "QuickBooks Client Secret",
+   "reqd": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "issingle": 1,
+ "links": [],
+ "modified": "2025-06-06 13:26:15.142094",
+ "modified_by": "Administrator",
+ "module": "Quickbooks Integration",
+ "name": "QuickBooks Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
