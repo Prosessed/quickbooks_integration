@@ -21,7 +21,6 @@
   "minor_version",
   "base_url",
   "authorization_state_section",
-  "authorize",
   "token_expiry",
   "is_authorized",
   "column_break_stsn",
@@ -118,11 +117,6 @@
    "reqd": 1
   },
   {
-   "fieldname": "authorize",
-   "fieldtype": "Button",
-   "label": "Authorize"
-  },
-  {
    "fieldname": "base_url",
    "fieldtype": "Data",
    "label": "Base Url",
@@ -131,12 +125,14 @@
   {
    "fieldname": "token_expiry",
    "fieldtype": "Datetime",
+   "ignore_user_permissions": 1,
    "label": "Token Expiry"
   },
   {
    "default": "0",
    "fieldname": "is_authorized",
    "fieldtype": "Check",
+   "ignore_user_permissions": 1,
    "label": "Is Authorized"
   },
   {
@@ -145,12 +141,14 @@
   },
   {
    "fieldname": "access_token",
-   "fieldtype": "Password",
+   "fieldtype": "Data",
+   "ignore_user_permissions": 1,
    "label": "Access Token"
   },
   {
    "fieldname": "refresh_token",
-   "fieldtype": "Password",
+   "fieldtype": "Data",
+   "ignore_user_permissions": 1,
    "label": "Refresh Token"
   }
  ],
@@ -158,7 +156,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-06-11 11:34:13.400419",
+ "modified": "2025-06-11 13:18:04.764988",
  "modified_by": "Administrator",
  "module": "Quickbooks Integration",
  "name": "QuickBooks Settings",
