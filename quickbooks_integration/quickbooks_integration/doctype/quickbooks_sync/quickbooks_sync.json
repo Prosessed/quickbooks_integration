@@ -6,10 +6,7 @@
  "engine": "InnoDB",
  "field_order": [
   "master_data_setting_section",
-  "sync_items",
-  "column_break_ksjl",
-  "sync_customers",
-  "sync_item_groups"
+  "sync_customers"
  ],
  "fields": [
   {
@@ -18,30 +15,16 @@
    "label": "Master Data Setting"
   },
   {
-   "fieldname": "sync_items",
-   "fieldtype": "Button",
-   "label": "Sync Items"
-  },
-  {
-   "fieldname": "column_break_ksjl",
-   "fieldtype": "Column Break"
-  },
-  {
    "fieldname": "sync_customers",
    "fieldtype": "Button",
    "label": "Sync Customers"
-  },
-  {
-   "fieldname": "sync_item_groups",
-   "fieldtype": "Button",
-   "label": "Sync Item Groups"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-06-06 13:28:00.148767",
+ "modified": "2025-06-17 10:26:07.868481",
  "modified_by": "Administrator",
  "module": "Quickbooks Integration",
  "name": "QuickBooks Sync",

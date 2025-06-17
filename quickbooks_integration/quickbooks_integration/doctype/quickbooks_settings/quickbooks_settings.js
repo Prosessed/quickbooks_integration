@@ -10,22 +10,11 @@ frappe.ui.form.on("QuickBooks Settings", {
                 launch_authorization_url(frm);
             }
         });
-
-        // 🔍 Debug log current route
-        console.log("Frappe Route:", frappe.get_route());
-
-        try {
-            // ✅ Only redirect if route has 'undefined'
-            if (frappe.get_route()[1] === "undefined") {
-                frappe.set_route("quickbooks-settings");
-            }
-        } catch (err) {
-            frappe.log_error(err.stack, "QuickBooks JS Error - Route Handling");
-        }
     }
 });
 
 function launch_authorization_url(frm) {
+
     const client_id = frm.doc.quickbooks_client_id;
     const redirect_uri = frm.doc.redirect_uri;
     const auth_scope = frm.doc.auth_scope || "com.intuit.quickbooks.accounting";
