@@ -6,7 +6,8 @@
  "engine": "InnoDB",
  "field_order": [
   "master_data_setting_section",
-  "sync_customers"
+  "sync_customers",
+  "sync_sales_order"
  ],
  "fields": [
   {
@@ -18,7 +19,12 @@
    "fieldname": "sync_customers",
    "fieldtype": "Button",
    "label": "Sync Customers"
-  }
+  },
+  {
+    "fieldname": "sync_sales_order",
+    "fieldtype": "Button",
+    "label": "Sync Sales Order"
+   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
