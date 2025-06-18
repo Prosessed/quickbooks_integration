@@ -235,12 +235,7 @@ app_license = "mit"
 # 	"quickbooks_integration.auth.validate"
 # ]
 
-doc_events = {
-		"Sales Order":{
-		"on_submit":"cin7_integration.api.create_sales_order_on_quickbooks",
-	},
 
-}
 # Automatically update python controller files with type annotations for this app.
 # export_python_type_annotations = True
 
