@@ -235,6 +235,12 @@ app_license = "mit"
 # 	"quickbooks_integration.auth.validate"
 # ]
 
+doc_events = {
+    "Sales Invoice": {
+        "on_submit": "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_invoice_to_quickbooks"
+    }
+}
+
 
 # Automatically update python controller files with type annotations for this app.
 # export_python_type_annotations = True

@@ -6,6 +6,7 @@ import json
 from frappe.model.document import Document
 import requests
 import frappe
+from frappe.utils import nowdate
 
 class QuickBooksSync(Document):
 	pass
@@ -154,27 +155,14 @@ def start_sales_order_sync():
 
 
 
-@frappe.whitelist()
-def start_sales_order_sync():
-    if not frappe.has_permission("QuickBooks Sync", "write"):
-        frappe.throw(("Not permitted"))
-
-    frappe.enqueue(
-        method=sync_sale_order_to_quickbooks,
-        queue='long',
-        timeout=600  # Increase if syncing many records
-    )
-
-
-@frappe.whitelist()
-def sync_sale_order_to_quickbooks():
+def sync_invoice_to_quickbooks(doc, method):
     settings = frappe.get_doc("QuickBooks Settings")
     access_token = settings.access_token
     company_id = settings.quickbooks_company_id
     base_url = settings.base_url.strip().rstrip("/")
-    minor_version = settings.minor_version
+    minor_version = settings.minor_version or "75"
 
-    url = f"{base_url}/v3/company/{company_id}/estimate?$minorversion={minor_version}"
+    url = f"{base_url}/v3/company/{company_id}/invoice?minorversion={minor_version}"
 
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -182,63 +170,71 @@ def sync_sale_order_to_quickbooks():
         "Accept": "application/json"
     }
 
-    # Get unsynced Sales Orders
-    sales_orders = frappe.get_all(
-        "Sales Order",
-        filters={ "custom_is_quickbook_synced": 0},
-        fields=["name", "customer", "transaction_date", "grand_total"]
-    )
+    qb_customer_id = doc.get("custom_quickbooks_customer_id") or "1"
 
-    if not sales_orders:
-        frappe.logger().info("No new sales orders to sync with QuickBooks.")
-        return
+    line_items = []
+    FALLBACK_GST_CODE = "5"
+    for idx, item in enumerate(doc.items, start=1):
 
-    for so in sales_orders:
-        try:
-            so_doc = frappe.get_doc("Sales Order", so.name)
+        tax_code = FALLBACK_GST_CODE
 
-            qb_payload = {
-                "CustomerRef": {
-                    "name": so_doc.customer,
-                    "value" : 77
-                },
-               "TxnDate": so_doc.delivery_date.isoformat() if so_doc.delivery_date else None,
-                "TotalAmt": float(so_doc.grand_total),
-                 "Line": [
-                    {
-                        "DetailType": "SalesItemLineDetail",
-                        "Amount": float(item.amount),
-                        "Description": item.custom_item_detail_notes or item.item_name,
-                        "SalesItemLineDetail": {
-                            "Qty": item.qty,
-                            "UnitPrice": float(item.rate),
+        # Get GST code from item's Item Tax Template
+        if item.item_tax_template:
+            try:
+                tax_template = frappe.get_doc("Item Tax Template", item.item_tax_template)
+                if tax_template.custom_quickbooks_gst_id:
+                    tax_code = tax_template.custom_quickbooks_gst_id
+            except Exception as e:
+                frappe.log_error(f"Error fetching GST code from tax template {item.item_tax_template}", str(e))
 
-                            "TaxCodeRef": {
-                                "value": "5"
-                            }
-                        }
-                    } for item in so_doc.items
-                    ],
-                    "TxnTaxDetail": {
-                     "TotalTax": 0
-                 },
+        line_items.append({
+            "DetailType": "SalesItemLineDetail",
+            "Amount": float(item.amount),
+            "Description": item.description or item.item_name,
+            "SalesItemLineDetail": {
+                "Qty": item.qty,
+                "UnitPrice": float(item.rate),
+                "TaxCodeRef": {
+                   "value": tax_code
+                }
             }
+        })
 
-            response = requests.post(url, headers=headers, data=json.dumps(qb_payload))
+    payload = {
+        "DocNumber": doc.name,
+        "CustomerRef": {
+            "value": qb_customer_id,
+            "name": doc.customer
+        },
+        "Line": line_items,
+        "ApplyTaxAfterDiscount": False,
+        "CustomerMemo": {
+            "value": "Generated from ERPNext"
+        },
+        "PrintStatus": "NeedToPrint",
+        "EmailStatus": "NotSet"
+    }
 
-            if response.status_code == 200:
-                # Mark SO as synced
-                so_doc.db_set("custom_is_quickbook_synced", 1)
-                frappe.logger().info(f"[QuickBooks] Sales Order {so_doc.name} synced successfully.")
+    try:
+        response = requests.post(url, headers=headers, data=json.dumps(payload))
+
+        if response.status_code == 200:
+            qbo_invoice_id = response.json().get("Invoice", {}).get("Id")
+            if qbo_invoice_id:
+                doc.db_set("custom_quickbooks_invoice_id", qbo_invoice_id)
+                frappe.logger().info(f"[QBO] Sales Invoice {doc.name} synced as QBO Invoice {qbo_invoice_id}")
             else:
-                frappe.log_error(
-                    title="QuickBooks Sync Failed",
-                    message=f"Sales Order: {so_doc.name}, Status Code: {response.status_code}, Response: {response.text}"
-                )
-
-        except Exception as e:
-            frappe.log_error(f"Failed to sync SO {so['name']} to QuickBooks: {str(e)}")
-
+                frappe.log_error("QuickBooks Invoice Sync - Missing ID", json.dumps(response.json(), indent=2))
+        else:
+            frappe.log_error(
+                title="QuickBooks Invoice Sync Failed",
+                message=f"Sales Invoice: {doc.name}\nStatus: {response.status_code}\nResponse: {response.text}"
+            )
+    except Exception as e:
+        frappe.log_error(
+            title="QuickBooks Invoice Sync Error",
+            message=f"Sales Invoice: {doc.name}\nError: {str(e)}"
+        )
 
 @frappe.whitelist()
 def start_customer_background():
@@ -283,31 +279,37 @@ def sync_customers_from_quickbooks():
         frappe.log_error(message=str(e), title="QuickBooks Customer Sync Failed")
 
 def create_or_update_customer(qb_customer):
-    """Create or update customer in ERPNext based on QuickBooks data."""
+    """Create or update customer in ERPNext based on QuickBooks customer data."""
 
     qb_id = qb_customer.get("Id")
-    display_name = qb_customer.get("DisplayName")
+    display_name = qb_customer.get("DisplayName") or "Unnamed Customer"
     company_name = qb_customer.get("CompanyName") or display_name
 
-    # Check if customer already exists
+    if not qb_id:
+        frappe.logger().error("[QB SYNC] Missing Customer ID in QuickBooks data.")
+        return
+
+    # Check if customer already exists by QuickBooks ID
     existing = frappe.db.exists("Customer", {"custom_quickbooks_customer_id": qb_id})
     if existing:
         customer = frappe.get_doc("Customer", existing)
+        frappe.logger().info(f"[QB SYNC] Updating existing customer: {display_name} (QB ID: {qb_id})")
     else:
         customer = frappe.new_doc("Customer")
+        frappe.logger().info(f"[QB SYNC] Creating new customer: {display_name} (QB ID: {qb_id})")
 
     customer.customer_name = display_name
     customer.customer_type = "Company" if qb_customer.get("CompanyName") else "Individual"
     customer.custom_quickbooks_customer_id = qb_id
-    customer.customer_group = "All Customer Groups"  # Adjust as needed
-    customer.territory = "All Territories"  # Adjust as needed
+    customer.customer_group = "All Customer Groups"  # Customize if needed
+    customer.territory = "All Territories"           # Customize if needed
 
     customer.save(ignore_permissions=True)
 
-    # Map Address
+    # Map Address (ignore BillAddr.Id, only used internally by QuickBooks)
     map_customer_address(customer.name, qb_customer)
 
-    # Map Contact
+    # Map Contact (phone/email if available)
     map_customer_contact(customer.name, qb_customer)
 
 

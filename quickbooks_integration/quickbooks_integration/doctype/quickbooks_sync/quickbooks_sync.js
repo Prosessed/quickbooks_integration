@@ -19,17 +19,17 @@ frappe.ui.form.on("QuickBooks Sync", {
         });
     },
 
-    sync_sales_order(frm) {
-        frappe.call({
-            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_sales_order_sync",
-            args: {},
-            callback: (r) => {
-                if (!r.exc) {
-                    frappe.msgprint("Order sync has started in background.");
-                }
-            }
-        });
-    },
+    // sync_sales_order(frm) {
+    //     frappe.call({
+    //         method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_sales_order_sync",
+    //         args: {},
+    //         callback: (r) => {
+    //             if (!r.exc) {
+    //                 frappe.msgprint("Order sync has started in background.");
+    //             }
+    //         }
+    //     });
+    // },
 
 
 });
