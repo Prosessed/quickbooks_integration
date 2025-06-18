@@ -9,7 +9,7 @@ frappe.ui.form.on("QuickBooks Sync", {
 
     sync_customers(frm) {
         frappe.call({
-            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_customer_sync",
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_customer_background",
             args: {},
             callback: (r) => {
                 if (!r.exc) {

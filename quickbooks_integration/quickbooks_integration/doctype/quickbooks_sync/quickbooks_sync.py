@@ -2,6 +2,7 @@
 # For license information, please see license.txt
 
 # import frappe
+import json
 from frappe.model.document import Document
 import requests
 import frappe
@@ -19,89 +20,6 @@ def start_customer_sync():
         method=sync_customers_to_quickbooks,  # Direct function reference
         queue='long'
     )
-from frappe.utils import now_datetime
-import requests
-
-# @frappe.whitelist()
-# def sync_customers_to_quickbooks():
-#     """Sync unsynced ERPNext customers to QuickBooks, using settings-driven config."""
-
-#     # Load settings
-#     settings = frappe.get_doc("QuickBooks Settings")
-
-#     minor_version = settings.minor_version or "75"
-#     realm_id = settings.quickbooks_company_id
-#     access_token = settings.access_token
-#     base_url = settings.base_url.strip()
-#     scope = settings.auth_scope or ""
-
-#     # Validate essentials
-#     if not realm_id or not access_token:
-#         frappe.throw("Missing QuickBooks Company ID or access token.")
-
-#     if "com.intuit.quickbooks.accounting" not in scope.split():
-#         frappe.throw("Access token does not include required 'com.intuit.quickbooks.accounting' scope.")
-
-#     # Ensure URL is usable
-#     if not base_url.startswith("http"):
-#         base_url = "https://" + base_url
-
-#     endpoint = f"{base_url}/v3/company/{realm_id}/customer?minorversion={minor_version}"
-
-#     # Get unsynced customers
-#     unsynced_customers = frappe.get_all("Customer",
-#         filters={"custom_is_customer_synced": 0},
-#         fields=["name", "customer_name", "email_id", "mobile_no", "customer_primary_address"]
-#     )
-
-#     if not unsynced_customers:
-#         frappe.logger().info("[QuickBooks Sync] No unsynced customers found.")
-#         return
-
-#     for cust in unsynced_customers:
-#         address = frappe.get_doc("Address", cust["customer_primary_address"]) if cust["customer_primary_address"] else None
-
-#         payload = {
-#             "DisplayName": cust["customer_name"],
-#             "PrimaryEmailAddr": {"Address": cust["email_id"]} if cust.get("email_id") else None,
-#             "PrimaryPhone": {"FreeFormNumber": cust["mobile_no"]} if cust.get("mobile_no") else None,
-#             "BillAddr": {
-#                 "Line1": address.address_line1 if address else "",
-#                 "City": address.city if address else "",
-#                 "CountrySubDivisionCode": address.state if address else "",
-#                 "PostalCode": address.pincode if address else "",
-#                 "Country": address.country if address else ""
-#             },
-#             "Notes": f"Imported from ERPNext Customer: {cust['name']}"
-#         }
-
-#         payload = {k: v for k, v in payload.items() if v}
-
-#         res = requests.post(
-#             endpoint,
-#             headers={
-#                 "Authorization": f"Bearer {access_token}",
-#                 "Accept": "application/json",
-#                 "Content-Type": "application/json"
-#             },
-#             json=payload
-#         )
-
-#         if res.ok:
-#             frappe.db.set_value("Customer", cust["name"], "custom_is_customer_synced", 1)
-#             frappe.logger().info(f"[QuickBooks Sync] Synced customer: {cust['customer_name']}")
-#     else:
-#             error_msg = f"[QuickBooks Sync] Failed for {cust['customer_name']} - Status Code: {res.status_code}\nResponse: {res.text[:1000]}"
-
-#             if res.status_code == 403 and "003100" in res.text:
-#                 error_msg += "\nReason: ApplicationAuthorizationFailed (Error 003100) – Likely due to expired or invalid token, incorrect realm ID, or missing authorization."
-
-#             frappe.log_error(
-#                 title=f"[QuickBooks Sync] Error syncing {cust['customer_name']}",
-#                 message=error_msg
-#             )
-
-#     frappe.db.commit()
 
 
 @frappe.whitelist()
@@ -235,17 +153,11 @@ def start_sales_order_sync():
     )
 
 
-import frappe
-import requests
-from frappe.utils.background_jobs import enqueue
-from frappe.utils import now
-from frappe import _
-import json
 
 @frappe.whitelist()
 def start_sales_order_sync():
     if not frappe.has_permission("QuickBooks Sync", "write"):
-        frappe.throw(_("Not permitted"))
+        frappe.throw(("Not permitted"))
 
     frappe.enqueue(
         method=sync_sale_order_to_quickbooks,
@@ -327,3 +239,177 @@ def sync_sale_order_to_quickbooks():
         except Exception as e:
             frappe.log_error(f"Failed to sync SO {so['name']} to QuickBooks: {str(e)}")
 
+
+@frappe.whitelist()
+def start_customer_background():
+    """Enqueue customer sync job to run in background."""
+    frappe.enqueue(sync_customers_from_quickbooks, queue='long', timeout=300)
+    frappe.msgprint("Customer sync from QuickBooks has been started in the background.")
+
+def sync_customers_from_quickbooks():
+    """Pull customers from QuickBooks and sync into ERPNext."""
+    frappe.logger().info("[QB SYNC] Started customer sync job")  # ADD THIS
+
+    settings = frappe.get_single("QuickBooks Settings")
+    ACCESS_TOKEN = settings.access_token
+    REALM_ID = settings.quickbooks_company_id
+    url = settings.base_url.replace("https://", "").strip("/")  # strip protocol if included
+    BASE_URL = f"https://{url}/v3/company"
+
+    # QUERY_URL = f"{BASE_URL}/{REALM_ID}/query?minorversion=75"
+    QUERY_URL = f"{BASE_URL}/{REALM_ID}/query?query=SELECT%20*%20FROM%20Customer&minorversion=75"
+
+
+    HEADERS = {
+        "Authorization": f"Bearer {ACCESS_TOKEN}",
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.get(
+            QUERY_URL,
+            headers=HEADERS
+        )
+        response.raise_for_status()
+        data = response.json()
+
+        customers = data.get("QueryResponse", {}).get("Customer", [])
+        for qb_customer in customers:
+            create_or_update_customer(qb_customer)  # This should be defined elsewhere
+
+        frappe.logger().info("QuickBooks Customer Sync Completed.")
+    except Exception as e:
+        frappe.log_error(message=str(e), title="QuickBooks Customer Sync Failed")
+
+def create_or_update_customer(qb_customer):
+    """Create or update customer in ERPNext based on QuickBooks data."""
+
+    qb_id = qb_customer.get("Id")
+    display_name = qb_customer.get("DisplayName")
+    company_name = qb_customer.get("CompanyName") or display_name
+
+    # Check if customer already exists
+    existing = frappe.db.exists("Customer", {"custom_quickbooks_customer_id": qb_id})
+    if existing:
+        customer = frappe.get_doc("Customer", existing)
+    else:
+        customer = frappe.new_doc("Customer")
+
+    customer.customer_name = display_name
+    customer.customer_type = "Company" if qb_customer.get("CompanyName") else "Individual"
+    customer.custom_quickbooks_customer_id = qb_id
+    customer.customer_group = "All Customer Groups"  # Adjust as needed
+    customer.territory = "All Territories"  # Adjust as needed
+
+    customer.save(ignore_permissions=True)
+
+    # Map Address
+    map_customer_address(customer.name, qb_customer)
+
+    # Map Contact
+    map_customer_contact(customer.name, qb_customer)
+
+
+def map_customer_address(customer_name, qb_customer):
+    """Create billing and shipping address records."""
+    address_fields = [
+        ("BillAddr", "Billing"),
+        ("ShipAddr", "Shipping")
+    ]
+
+    country_map = {
+        "US": "United States",
+        "USA": "United States",
+        "AU": "Australia",
+        "AUS": "Australia",
+        "CA": "Canada",
+        "GB": "United Kingdom",
+        "IN": "India"
+        # Add more if needed
+    }
+
+    for addr_field, addr_type in address_fields:
+        addr_data = qb_customer.get(addr_field)
+        if not addr_data:
+            continue
+
+        address_name = f"{customer_name} - {addr_type}"
+        address_line = addr_data.get("Line1")
+        city = addr_data.get("City")
+        state = addr_data.get("CountrySubDivisionCode")
+        postal_code = addr_data.get("PostalCode")
+
+        # Resolve country safely
+        raw_country = addr_data.get("Country")
+        country = country_map.get(raw_country, raw_country)
+        if not country:
+            country = "Australia" if state == "NSW" else "United States"
+
+        # Validate country exists in ERPNext
+        if not frappe.db.exists("Country", country):
+            frappe.logger().warn(f"[Address Mapping] Unknown country '{country}' for {address_name}. Defaulting to 'Australia'")
+            country = "Australia"
+
+        # Check if address already exists
+        existing = frappe.db.exists("Address", {"address_title": address_name, "address_type": addr_type})
+        if existing:
+            address = frappe.get_doc("Address", existing)
+        else:
+            address = frappe.new_doc("Address")
+
+        address.address_title = address_name
+        address.address_type = addr_type
+        address.address_line1 = address_line
+        address.city = city
+        address.state = state
+        address.pincode = postal_code
+        address.country = country
+        address.customer = customer_name
+
+        address.save(ignore_permissions=True)
+
+def map_customer_contact(customer_name, qb_customer):
+    """Create contact person linked to customer."""
+    phone = qb_customer.get("PrimaryPhone", {}).get("FreeFormNumber")
+    first_name = qb_customer.get("GivenName", "")
+    last_name = qb_customer.get("FamilyName", "")
+    full_name = f"{first_name} {last_name}".strip()
+    email = qb_customer.get("PrimaryEmailAddr", {}).get("Address")
+
+    if not phone and not full_name:
+        return  # No contact info to save
+
+    # Try to find an existing contact with same phone and name
+    existing_contacts = frappe.get_all("Contact", filters={
+        "first_name": first_name,
+        "last_name": last_name,
+        "phone": phone
+    }, fields=["name"])
+
+    contact = None
+    for contact_entry in existing_contacts:
+        doc = frappe.get_doc("Contact", contact_entry.name)
+        # Check if the link exists
+        for link in doc.links:
+            if link.link_doctype == "Customer" and link.link_name == customer_name:
+                contact = doc
+                break
+
+    if not contact:
+        contact = frappe.new_doc("Contact")
+
+    contact.first_name = first_name
+    contact.last_name = last_name
+    contact.phone = phone
+    if email:
+        contact.email_id = email
+
+    # Prevent duplicate link entry
+    if not any(link.link_doctype == "Customer" and link.link_name == customer_name for link in contact.links):
+        contact.append("links", {
+            "link_doctype": "Customer",
+            "link_name": customer_name
+        })
+
+    contact.save(ignore_permissions=True)
