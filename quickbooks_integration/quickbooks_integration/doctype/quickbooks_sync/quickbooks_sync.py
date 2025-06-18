@@ -143,15 +143,15 @@ def get_billing_address_for_customer(customer_name):
     return None
 
 
-@frappe.whitelist()
-def start_sales_order_sync():
-     if not frappe.has_permission("QuickBooks Sync", "write"):
-        frappe.throw("Not permitted")
+# @frappe.whitelist()
+# def start_sales_order_sync():
+#      if not frappe.has_permission("QuickBooks Sync", "write"):
+#         frappe.throw("Not permitted")
 
-     frappe.enqueue(
-        method=sync_sale_order_to_quickbooks,  # Direct function reference
-        queue='long'
-    )
+#      frappe.enqueue(
+#         method=sync_sale_order_to_quickbooks,  # Direct function reference
+#         queue='long'
+#     )
 
 
 
@@ -170,7 +170,9 @@ def sync_invoice_to_quickbooks(doc, method):
         "Accept": "application/json"
     }
 
-    qb_customer_id = doc.get("custom_quickbooks_customer_id") or "1"
+    customer_doc = frappe.get_doc("Customer", doc.customer)
+    qb_customer_id = customer_doc.get("custom_quickbooks_customer_id") or "1"
+
 
     line_items = []
     FALLBACK_GST_CODE = "5"
