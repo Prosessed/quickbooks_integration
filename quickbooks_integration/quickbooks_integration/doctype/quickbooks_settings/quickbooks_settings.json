@@ -5,6 +5,7 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "authorization_tab",
   "enable",
   "app_credentials_section",
   "quickbooks_client_id",
@@ -25,7 +26,13 @@
   "is_authorized",
   "column_break_stsn",
   "access_token",
-  "refresh_token"
+  "refresh_token",
+  "master_data_setting_tab",
+  "customer_section",
+  "allow_customer_sync_from_quickbooks",
+  "allow_customer_sync_prosessed",
+  "items_section",
+  "allow_item_sync_from_quickbooks"
  ],
  "fields": [
   {
@@ -150,13 +157,54 @@
    "fieldtype": "Data",
    "ignore_user_permissions": 1,
    "label": "Refresh Token"
+  },
+  {
+   "fieldname": "authorization_tab",
+   "fieldtype": "Tab Break",
+   "label": "Authorization"
+  },
+  {
+   "fieldname": "master_data_setting_tab",
+   "fieldtype": "Tab Break",
+   "label": "Master Data Setting"
+  },
+  {
+   "fieldname": "customer_section",
+   "fieldtype": "Section Break",
+   "label": "Customer"
+  },
+  {
+   "default": "0",
+   "description": "Quickbooks ---> Prosessed",
+   "fieldname": "allow_customer_sync_from_quickbooks",
+   "fieldtype": "Check",
+   "label": "Allow Customer Sync from Quickbooks"
+  },
+  {
+   "default": "0",
+   "description": "Prosessed ---> Quickbooks",
+   "fieldname": "allow_customer_sync_prosessed",
+   "fieldtype": "Check",
+   "label": "Allow Customer Sync Prosessed"
+  },
+  {
+   "fieldname": "items_section",
+   "fieldtype": "Section Break",
+   "label": "Items"
+  },
+  {
+   "default": "0",
+   "description": "Quickbooks ---> Prosessed",
+   "fieldname": "allow_item_sync_from_quickbooks",
+   "fieldtype": "Check",
+   "label": "Allow Item Sync from Quickbooks"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-06-11 13:18:04.764988",
+ "modified": "2025-06-23 16:35:43.404405",
  "modified_by": "Administrator",
  "module": "Quickbooks Integration",
  "name": "QuickBooks Settings",

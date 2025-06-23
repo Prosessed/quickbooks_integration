@@ -7,7 +7,8 @@
  "field_order": [
   "master_data_setting_section",
   "sync_customers",
-  "sync_sales_order"
+  "items_tab",
+  "sync_items"
  ],
  "fields": [
   {
@@ -21,16 +22,21 @@
    "label": "Sync Customers"
   },
   {
-    "fieldname": "sync_sales_order",
-    "fieldtype": "Button",
-    "label": "Sync Sales Order"
-   }
+   "fieldname": "items_tab",
+   "fieldtype": "Tab Break",
+   "label": "Items"
+  },
+  {
+   "fieldname": "sync_items",
+   "fieldtype": "Button",
+   "label": "Sync Items"
+  }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-06-17 10:26:07.868481",
+ "modified": "2025-06-23 20:24:44.058229",
  "modified_by": "Administrator",
  "module": "Quickbooks Integration",
  "name": "QuickBooks Sync",

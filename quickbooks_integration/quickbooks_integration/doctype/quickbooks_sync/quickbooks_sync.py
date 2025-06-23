@@ -314,7 +314,6 @@ def create_or_update_customer(qb_customer):
     # Map Contact (phone/email if available)
     map_customer_contact(customer.name, qb_customer)
 
-
 def map_customer_address(customer_name, qb_customer):
     """Create billing and shipping address records."""
     address_fields = [
@@ -417,3 +416,96 @@ def map_customer_contact(customer_name, qb_customer):
         })
 
     contact.save(ignore_permissions=True)
+
+
+
+@frappe.whitelist()
+def start_item_background():
+    """Enqueue item sync job to run in background."""
+
+    settings = frappe.get_doc("QuickBooks Settings")
+    if settings.allow_item_sync_from_quickbooks != 1:
+        frappe.frappe.msgprint('Message', title="QuickBooks Item Sync Disabled",
+                                indicator="red",
+                            )
+
+    frappe.enqueue(item_sync, queue='long', timeout=300)
+    frappe.msgprint("Item sync from QuickBooks has been started in the background.")
+
+@frappe.whitelist()
+def item_sync():
+
+    """Sync items from QuickBooks to ERPNext."""
+    settings = frappe.get_doc("QuickBooks Settings")
+    access_token = settings.access_token
+    company_id = settings.quickbooks_company_id
+    base_url = settings.base_url.strip().rstrip("/")
+    minor_version = settings.minor_version or "75"
+
+    query = "SELECT * FROM Item"
+    url = f"{base_url}/v3/company/{company_id}/query?query={query.replace(' ', '%20')}&minorversion={minor_version}"
+
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+        items = data.get("QueryResponse", {}).get("Item", [])
+        for qb_item in items:
+            create_or_update_item(qb_item)
+
+        frappe.logger().info("[QB SYNC] Item sync completed successfully.")
+    except Exception as e:
+        frappe.log_error(message=str(e), title="QuickBooks Item Sync Failed")
+
+
+def create_or_update_item(qb_item):
+
+    """Create or update item in ERPNext based on QuickBooks item data."""
+
+    qb_id = qb_item.get("Id")
+    name = qb_item.get("FullyQualifiedName") or "Unnamed Item"
+    item_type = qb_item.get("Type", "Inventory")
+
+    existing = frappe.db.exists("Item", {"custom_quickbooks_item_id": qb_id})
+    if existing:
+        item = frappe.get_doc("Item", existing)
+    else:
+        item = frappe.new_doc("Item")
+
+
+    if qb_item.get("SalesTaxCodeRef") is not None:
+        tax_code = qb_item["SalesTaxCodeRef"].get("value")
+        if tax_code:
+            tax_template = frappe.get_all("Item Tax Template", filters={"custom_quickbooks_gst_id": tax_code}, limit=1)
+            if tax_template:
+
+                item.append("taxes",{
+                    "item_tax_template": tax_template[0].name,
+                });
+            else:
+                frappe.logger().warn(f"[Item Sync] No Item Tax Template found for QuickBooks GST Code: {tax_code}")
+
+    item.item_name = name
+    item.item_code = qb_item.get("Name")
+    item.item_group = "All Item Groups"
+    item.custom_quickbooks_item_id = qb_id
+    item.item_type = item_type
+    item.description = qb_item.get("Description", "")
+    item.stock_uom = "Unit"
+    item.default_unit_of_measure = "Unit"
+
+    if "UnitPrice" in qb_item:
+        item.standard_rate = float(qb_item["UnitPrice"])
+
+    item.save(ignore_permissions=True)
+
+    frappe.db.commit()
