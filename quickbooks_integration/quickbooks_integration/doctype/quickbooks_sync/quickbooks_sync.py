@@ -425,9 +425,10 @@ def start_item_background():
 
     settings = frappe.get_doc("QuickBooks Settings")
     if settings.allow_item_sync_from_quickbooks != 1:
-        frappe.frappe.msgprint('Message', title="QuickBooks Item Sync Disabled",
+        frappe.frappe.msgprint('Navigate to Quickbooks Settings & Please enable Item sync to continue', title="QuickBooks Item Sync Disabled",
                                 indicator="red",
                             )
+        return
 
     frappe.enqueue(item_sync, queue='long', timeout=300)
     frappe.msgprint("Item sync from QuickBooks has been started in the background.")
