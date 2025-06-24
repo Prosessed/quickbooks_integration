@@ -4,6 +4,7 @@ frappe.ui.form.on("QuickBooks Sync", {
         frm.get_field("sync_customers").$input.addClass('btn-primary');
         frm.get_field("sync_sales_order").$input.addClass('btn-primary');
         frm.get_field("sync_items").$input.addClass('btn-primary');
+        frm.get_field("sync_suppliers").$input.addClass('btn-primary');
 
     },
 
@@ -27,6 +28,18 @@ frappe.ui.form.on("QuickBooks Sync", {
             callback: (r) => {
                 if (!r.exc) {
                     frappe.msgprint("Item sync has started in background.");
+                }
+            }
+        });
+    },
+
+    sync_suppliers(frm) {
+        frappe.call({
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_supplier_background",
+            args: {},
+            callback: (r) => {
+                if (!r.exc) {
+                    frappe.msgprint("Supplier sync has started in background.");
                 }
             }
         });

@@ -8,7 +8,9 @@
   "master_data_setting_section",
   "sync_customers",
   "items_tab",
-  "sync_items"
+  "sync_items",
+  "suppliers_tab",
+  "sync_suppliers"
  ],
  "fields": [
   {
@@ -30,13 +32,23 @@
    "fieldname": "sync_items",
    "fieldtype": "Button",
    "label": "Sync Items"
+  },
+  {
+   "fieldname": "suppliers_tab",
+   "fieldtype": "Tab Break",
+   "label": "Suppliers"
+  },
+  {
+   "fieldname": "sync_suppliers",
+   "fieldtype": "Button",
+   "label": "Sync Suppliers"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-06-23 20:24:44.058229",
+ "modified": "2025-06-24 21:31:37.388062",
  "modified_by": "Administrator",
  "module": "Quickbooks Integration",
  "name": "QuickBooks Sync",
