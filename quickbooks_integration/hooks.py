@@ -237,15 +237,13 @@ app_license = "mit"
 
 doc_events = {
     "Sales Invoice": {
-        "on_submit": "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_invoice_to_quickbooks"
-    },
-    "Purchase Invoice": {
-        "on_submit": "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_purchase_invoice_to_quickbooks"
-    },
-    "Sales Invoice": {
+        "on_submit": "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_invoice_to_quickbooks",
         "on_cancel": "quickbooks_integration.api.sync_sales_invoice_cancellation"
     },
-
+    "Purchase Invoice": {
+        "on_submit": "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_purchase_invoice_to_quickbooks",
+        "on_cancel": "quickbooks_integration.api.sync_purchase_invoice_cancellation"
+    }
 }
 
 

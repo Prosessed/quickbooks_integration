@@ -228,3 +228,114 @@ def cancel_quickbooks_invoice(invoice_id):
         frappe.throw(f"Failed to cancel Invoice in QuickBooks. Error: {str(e)}")
 
     return _("Invoice {0} has been successfully cancelled in QuickBooks.").format(invoice_id)
+
+
+
+@frappe.whitelist()
+def get_quickbooks_purchase_order_sync_token(purchase_order_id):
+    """
+    Fetch the latest SyncToken for a QuickBooks Purchase Order by its ID.
+
+    Args:
+        purchase_order_id (str): The QuickBooks Purchase Order ID.
+
+    Returns:
+        str: SyncToken of the Purchase Order.
+
+    Raises:
+        frappe.ValidationError: If fetching the Purchase Order or SyncToken fails.
+    """
+    if not purchase_order_id:
+        frappe.throw(_("QuickBooks Purchase Order ID is required."))
+
+    settings = frappe.get_single("QuickBooks Settings")
+    access_token = settings.access_token
+    realm_id = settings.quickbooks_company_id
+    minor_version = settings.minor_version or "75"
+    base_url = settings.base_url.rstrip("/").replace("https://", "").strip("/")
+
+    url = f"https://{base_url}/v3/company/{realm_id}/purchaseorder/{purchase_order_id}?minorversion={minor_version}"
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json"
+    }
+
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as e:
+        frappe.throw(_("Failed to fetch Purchase Order from QuickBooks. Error: {0}").format(str(e)))
+
+    purchase_order_data = data.get("PurchaseOrder")
+    if not purchase_order_data:
+        frappe.throw(_("No Purchase Order data found for ID {0} in QuickBooks.").format(purchase_order_id))
+
+    sync_token = purchase_order_data.get("SyncToken")
+    if sync_token is None:
+        frappe.throw(_("SyncToken not found for QuickBooks Purchase Order ID {0}.").format(purchase_order_id))
+
+    return sync_token
+
+
+@frappe.whitelist()
+def sync_purchase_invoice_cancellation(doc, method):
+    """
+    Frappe doc_event hook for Purchase Invoice cancellation.
+    Cancels the linked Purchase Order in QuickBooks, if available.
+    """
+    qb_purchase_order_id = doc.get("custom_quickbooks_bill_id")
+
+    if not qb_purchase_order_id:
+        frappe.msgprint(_("No QuickBooks Purchase Order ID found for {0}. Skipping cancellation.").format(doc.name))
+        return
+
+    cancel_quickbooks_purchase_order(qb_purchase_order_id)
+    frappe.msgprint(_("Purchase Invoice {0} successfully voided in QuickBooks.").format(doc.name))
+
+
+@frappe.whitelist()
+def cancel_quickbooks_purchase_order(purchase_order_id):
+    """
+    Cancel (void) a Purchase Order in QuickBooks by its ID.
+
+    Args:
+        purchase_order_id (str): The QuickBooks Purchase Order ID.
+    """
+    refresh_quickbooks_access_token()
+
+    if not purchase_order_id:
+        frappe.throw(_("QuickBooks Purchase Order ID is required."))
+
+    settings = frappe.get_single("QuickBooks Settings")
+    access_token = settings.access_token
+    realm_id = settings.quickbooks_company_id
+    base_url = settings.base_url.rstrip("/").replace("https://", "").strip("/")
+    url = f"https://{base_url}/v3/company/{realm_id}/purchaseorder?operation=delete"
+
+    sync_token = get_quickbooks_purchase_order_sync_token(purchase_order_id)
+
+    payload = {
+        "Id": purchase_order_id,
+        "SyncToken": sync_token
+    }
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+
+    frappe.logger().info(f"[QuickBooks] Voiding Purchase Order {purchase_order_id} with SyncToken {sync_token}")
+    frappe.logger().info(f"[QuickBooks] Void Purchase Order Request URL: {url}")
+    frappe.logger().info(f"[QuickBooks] Void Purchase Order Payload: {payload}")
+
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        frappe.logger().info(f"[QuickBooks] Void Purchase Order Response: {response.text}")
+    except requests.RequestException as e:
+        frappe.throw(_("Failed to cancel Purchase Order in QuickBooks. Error: {0}").format(str(e)))
+
+    return _("Purchase Order {0} has been successfully cancelled in QuickBooks.").format(purchase_order_id)
