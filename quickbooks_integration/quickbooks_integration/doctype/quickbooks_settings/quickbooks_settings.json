@@ -189,7 +189,7 @@
    "description": "Prosessed ---> Quickbooks",
    "fieldname": "allow_customer_sync_prosessed",
    "fieldtype": "Check",
-   "label": "Allow Customer Sync Prosessed"
+   "label": "Allow Customer Sync to Quickbooks"
   },
   {
    "fieldname": "items_section",
@@ -231,7 +231,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-06-24 21:53:07.601741",
+ "modified": "2025-06-25 13:26:06.474123",
  "modified_by": "Administrator",
  "module": "Quickbooks Integration",
  "name": "QuickBooks Settings",

@@ -2,6 +2,7 @@ frappe.ui.form.on("QuickBooks Sync", {
 
     refresh(frm) {
         frm.get_field("sync_customers").$input.addClass('btn-primary');
+        frm.get_field("sync_customers_to_quickbooks").$input.addClass('btn-primary');
         frm.get_field("sync_sales_order").$input.addClass('btn-primary');
         frm.get_field("sync_items").$input.addClass('btn-primary');
         frm.get_field("sync_suppliers").$input.addClass('btn-primary');
@@ -9,17 +10,31 @@ frappe.ui.form.on("QuickBooks Sync", {
     },
 
 
+    sync_customers_to_quickbooks(frm) {
+        frappe.call({
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_customer_sync",
+            args: {},
+            callback: (r) => {
+                if (!r.exc) {
+                    frappe.msgprint("Customer sync from prosessed to quickbooks has started in background.");
+                }
+            }
+        });
+    },
+
     sync_customers(frm) {
         frappe.call({
             method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_customer_background",
             args: {},
             callback: (r) => {
                 if (!r.exc) {
-                    frappe.msgprint("Customer sync has started in background.");
+                    frappe.msgprint("Customer sync from quickbooks to prosessed has started in background.");
                 }
             }
         });
     },
+
+
 
     sync_items(frm) {
         frappe.call({

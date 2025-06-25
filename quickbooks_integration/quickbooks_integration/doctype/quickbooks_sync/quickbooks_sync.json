@@ -5,8 +5,11 @@
  "doctype": "DocType",
  "engine": "InnoDB",
  "field_order": [
+  "customers_tab",
   "master_data_setting_section",
   "sync_customers",
+  "column_break_elpf",
+  "sync_customers_to_quickbooks",
   "items_tab",
   "sync_items",
   "suppliers_tab",
@@ -15,13 +18,13 @@
  "fields": [
   {
    "fieldname": "master_data_setting_section",
-   "fieldtype": "Section Break",
-   "label": "Master Data Setting"
+   "fieldtype": "Section Break"
   },
   {
+   "description": "Quickbooks ---> Prosessed",
    "fieldname": "sync_customers",
    "fieldtype": "Button",
-   "label": "Sync Customers"
+   "label": "Sync Customers from Quickbooks"
   },
   {
    "fieldname": "items_tab",
@@ -42,13 +45,28 @@
    "fieldname": "sync_suppliers",
    "fieldtype": "Button",
    "label": "Sync Suppliers"
+  },
+  {
+   "fieldname": "customers_tab",
+   "fieldtype": "Tab Break",
+   "label": "Customers"
+  },
+  {
+   "fieldname": "column_break_elpf",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Prosessed ---> Quickbooks",
+   "fieldname": "sync_customers_to_quickbooks",
+   "fieldtype": "Button",
+   "label": "Sync Customers to Quickbooks"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-06-24 21:31:37.388062",
+ "modified": "2025-06-25 13:19:48.690833",
  "modified_by": "Administrator",
  "module": "Quickbooks Integration",
  "name": "QuickBooks Sync",
