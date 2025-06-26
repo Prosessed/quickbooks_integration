@@ -512,20 +512,24 @@ def create_or_update_item(qb_item):
 
 @frappe.whitelist()
 def sync_supplier_background():
+    """Trigger background supplier sync."""
     refresh_quickbooks_access_token()
 
     settings = frappe.get_doc("QuickBooks Settings")
     if settings.allow_supplier_sync_from_quickbooks != 1:
-        frappe.frappe.msgprint('Navigate to Quickbooks Settings & Please enable Supplier sync to continue', title="QuickBooks Supplier Sync Disabled",
-                                indicator="red",
-                            )
+        frappe.msgprint(
+            'Navigate to Quickbooks Settings & Please enable Supplier sync to continue',
+            title="QuickBooks Supplier Sync Disabled",
+            indicator="red",
+        )
         return
-    """Enqueue supplier sync job to run in background."""
+
     frappe.enqueue(sync_suppliers_from_quickbooks, queue='long', timeout=300)
     frappe.msgprint("Supplier sync from QuickBooks has been started in the background.")
 
+
 def sync_suppliers_from_quickbooks():
-    """Pull suppliers from QuickBooks and sync into ERPNext."""
+    """Pull suppliers from QuickBooks and sync into ERPNext with pagination."""
     frappe.logger().info("[QB SYNC] Started supplier sync job")
 
     settings = frappe.get_single("QuickBooks Settings")
@@ -535,51 +539,69 @@ def sync_suppliers_from_quickbooks():
     url = settings.base_url.replace("https://", "").strip("/")
     BASE_URL = f"https://{url}/v3/company"
 
-    query = "SELECT * FROM Vendor"
-    url = f"{BASE_URL}/{REALM_ID}/query?query={query.replace(' ', '%20')}&minorversion={minor_version}"
+    max_results = 100
+    start_position = 1
 
     HEADERS = {
         "Authorization": f"Bearer {ACCESS_TOKEN}",
         "Accept": "application/json"
     }
 
-    try:
-        response = requests.get(url, headers=HEADERS)
-        response.raise_for_status()
+    while True:
+        query = f"SELECT * FROM Vendor STARTPOSITION {start_position} MAXRESULTS {max_results}"
+        request_url = f"{BASE_URL}/{REALM_ID}/query?query={query.replace(' ', '%20')}&minorversion={minor_version}"
 
-        data = response.json()
-        suppliers = data.get("QueryResponse", {}).get("Vendor", [])
+        try:
+            response = requests.get(request_url, headers=HEADERS)
+            response.raise_for_status()
 
-        for qb_supplier in suppliers:
-            create_or_update_supplier(qb_supplier)
+            data = response.json()
+            suppliers = data.get("QueryResponse", {}).get("Vendor", [])
 
-        frappe.logger().info("[QB SYNC] Supplier Sync Completed.")
+            if not suppliers:
+                break  # No more suppliers
 
-    except Exception as e:
-        frappe.log_error(message=str(e), title="QuickBooks Supplier Sync Failed")
+            for qb_supplier in suppliers:
+                create_or_update_supplier(qb_supplier)
+
+            frappe.logger().info(f"[QB SYNC] Fetched {len(suppliers)} suppliers from position {start_position}")
+
+            if len(suppliers) < max_results:
+                break  # Last page
+
+            start_position += max_results
+
+        except Exception as e:
+            frappe.log_error(message=str(e), title="QuickBooks Supplier Sync Failed")
+            break
+
+    frappe.logger().info("[QB SYNC] Completed supplier sync job")
+
 
 def create_or_update_supplier(qb_supplier):
     """Create or update supplier in ERPNext based on QuickBooks supplier data."""
 
     qb_id = qb_supplier.get("Id")
-    display_name = qb_supplier.get("CompanyName")
-
     if not qb_id:
         frappe.logger().error("[QB SYNC] Missing Supplier ID in QuickBooks data.")
         return
 
-    # Check if supplier already exists by QuickBooks ID
+    display_name = qb_supplier.get("DisplayName") or "Unknown Supplier"
+    company_name = qb_supplier.get("CompanyName") or display_name
+
     existing = frappe.db.exists("Supplier", {"custom_quickbooks_supplier_id": qb_id})
     if existing:
         supplier = frappe.get_doc("Supplier", existing)
-        frappe.logger().info(f"[QB SYNC] Updating existing supplier: {display_name} (QB ID: {qb_id})")
+        frappe.logger().info(f"[QB SYNC] Updating supplier: {display_name} (QB ID: {qb_id})")
     else:
         supplier = frappe.new_doc("Supplier")
         frappe.logger().info(f"[QB SYNC] Creating new supplier: {display_name} (QB ID: {qb_id})")
 
     supplier.supplier_name = display_name
-    supplier.supplier_type = "Company"
+    supplier.supplier_type = "Company" if qb_supplier.get("CompanyName") else "Individual"
     supplier.custom_quickbooks_supplier_id = qb_id
+    supplier.supplier_group = "All Supplier Groups"
+    supplier.territory = "All Territories"
 
     supplier.save(ignore_permissions=True)
 
