@@ -285,7 +285,7 @@ def create_or_update_customer(qb_customer):
         frappe.logger().error("[QB SYNC] Missing Customer ID in QuickBooks data.")
         return
 
-    display_name = qb_customer.get("DisplayName") or "Unnamed Customer"
+    display_name = qb_customer.get("DisplayName") or "Unknown Customer"
     company_name = qb_customer.get("CompanyName") or display_name
 
     existing = frappe.db.exists("Customer", {"custom_quickbooks_customer_id": qb_id})
@@ -309,7 +309,7 @@ def create_or_update_customer(qb_customer):
 
 
 def map_customer_address(customer_name, qb_customer):
-    """Create or update billing and shipping addresses."""
+    """Create or update billing and shipping addresses with 'Unknown' defaults."""
 
     address_fields = [
         ("BillAddr", "Billing"),
@@ -334,13 +334,13 @@ def map_customer_address(customer_name, qb_customer):
         address_name = f"{customer_name} - {addr_type}"
 
         address_lines = [addr_data.get(f"Line{i}") for i in range(1, 4) if addr_data.get(f"Line{i}")]
-        address_line = "\n".join(address_lines) if address_lines else ""
+        address_line = "\n".join(address_lines).strip() or "Unknown"
 
-        city = addr_data.get("City", "")
-        state = addr_data.get("CountrySubDivisionCode", "")
-        postal_code = addr_data.get("PostalCode", "")
+        city = addr_data.get("City", "").strip() or "Unknown"
+        state = addr_data.get("CountrySubDivisionCode", "").strip() or "Unknown"
+        postal_code = addr_data.get("PostalCode", "").strip() or "Unknown"
 
-        raw_country = addr_data.get("Country")
+        raw_country = addr_data.get("Country", "")
         country = country_map.get(raw_country, raw_country or "")
         if not country:
             country = "Australia" if state == "NSW" else "United States"
@@ -368,16 +368,13 @@ def map_customer_address(customer_name, qb_customer):
 
 
 def map_customer_contact(customer_name, qb_customer):
-    """Create or update contact person linked to customer."""
+    """Create or update contact person linked to customer with 'Unknown' defaults."""
 
-    phone = qb_customer.get("PrimaryPhone", {}).get("FreeFormNumber", "")
-    first_name = qb_customer.get("GivenName", "") or ""
-    last_name = qb_customer.get("FamilyName", "") or ""
+    phone = qb_customer.get("PrimaryPhone", {}).get("FreeFormNumber", "") or "Unknown"
+    first_name = qb_customer.get("GivenName", "") or "Unknown"
+    last_name = qb_customer.get("FamilyName", "") or "Unknown"
     full_name = f"{first_name} {last_name}".strip()
     email = qb_customer.get("PrimaryEmailAddr", {}).get("Address", "")
-
-    if not phone and not full_name and not email:
-        return  # No meaningful contact info
 
     existing_contacts = frappe.get_all("Contact", filters={
         "first_name": first_name,
