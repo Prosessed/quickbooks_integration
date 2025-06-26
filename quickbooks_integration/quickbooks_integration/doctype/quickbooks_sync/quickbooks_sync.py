@@ -227,19 +227,19 @@ def start_customer_background():
     frappe.enqueue(sync_customers_from_quickbooks, queue='long', timeout=300)
     frappe.msgprint("Customer sync from QuickBooks has been started in the background.")
 
+@frappe.whitelist()
 def sync_customers_from_quickbooks():
-    """Pull customers from QuickBooks and sync into ERPNext."""
-    frappe.logger().info("[QB SYNC] Started customer sync job")  # ADD THIS
+    """Pull all customers from QuickBooks and sync into ERPNext with pagination."""
+    frappe.logger().info("[QB SYNC] Started customer sync job")
 
     settings = frappe.get_single("QuickBooks Settings")
     ACCESS_TOKEN = settings.access_token
     REALM_ID = settings.quickbooks_company_id
-    url = settings.base_url.replace("https://", "").strip("/")  # strip protocol if included
+    url = settings.base_url.replace("https://", "").strip("/")
     BASE_URL = f"https://{url}/v3/company"
 
-    # QUERY_URL = f"{BASE_URL}/{REALM_ID}/query?minorversion=75"
-    QUERY_URL = f"{BASE_URL}/{REALM_ID}/query?query=SELECT%20*%20FROM%20Customer&minorversion=75"
-
+    max_results = 100
+    start_position = 1
 
     HEADERS = {
         "Authorization": f"Bearer {ACCESS_TOKEN}",
@@ -247,38 +247,51 @@ def sync_customers_from_quickbooks():
         "Content-Type": "application/json"
     }
 
-    try:
-        response = requests.get(
-            QUERY_URL,
-            headers=HEADERS
-        )
-        response.raise_for_status()
-        data = response.json()
+    while True:
+        query = f"SELECT * FROM Customer STARTPOSITION {start_position} MAXRESULTS {max_results}"
+        QUERY_URL = f"{BASE_URL}/{REALM_ID}/query?query={query.replace(' ', '%20')}&minorversion=75"
 
-        customers = data.get("QueryResponse", {}).get("Customer", [])
-        for qb_customer in customers:
-            create_or_update_customer(qb_customer)  # This should be defined elsewhere
+        try:
+            response = requests.get(QUERY_URL, headers=HEADERS)
+            response.raise_for_status()
+            data = response.json()
 
-        frappe.logger().info("QuickBooks Customer Sync Completed.")
-    except Exception as e:
-        frappe.log_error(message=str(e), title="QuickBooks Customer Sync Failed")
+            customers = data.get("QueryResponse", {}).get("Customer", [])
+            if not customers:
+                break  # No more customers
+
+            for qb_customer in customers:
+                create_or_update_customer(qb_customer)
+
+            frappe.logger().info(f"[QB SYNC] Fetched {len(customers)} customers from position {start_position}")
+
+            if len(customers) < max_results:
+                break  # Last page
+
+            start_position += max_results
+
+        except Exception as e:
+            frappe.log_error(message=str(e), title="QuickBooks Customer Sync Failed")
+            break
+
+    frappe.logger().info("[QB SYNC] Completed customer sync job")
+
 
 def create_or_update_customer(qb_customer):
     """Create or update customer in ERPNext based on QuickBooks customer data."""
 
     qb_id = qb_customer.get("Id")
-    display_name = qb_customer.get("DisplayName") or "Unnamed Customer"
-    company_name = qb_customer.get("CompanyName") or display_name
-
     if not qb_id:
         frappe.logger().error("[QB SYNC] Missing Customer ID in QuickBooks data.")
         return
 
-    # Check if customer already exists by QuickBooks ID
+    display_name = qb_customer.get("DisplayName") or "Unnamed Customer"
+    company_name = qb_customer.get("CompanyName") or display_name
+
     existing = frappe.db.exists("Customer", {"custom_quickbooks_customer_id": qb_id})
     if existing:
         customer = frappe.get_doc("Customer", existing)
-        frappe.logger().info(f"[QB SYNC] Updating existing customer: {display_name} (QB ID: {qb_id})")
+        frappe.logger().info(f"[QB SYNC] Updating customer: {display_name} (QB ID: {qb_id})")
     else:
         customer = frappe.new_doc("Customer")
         frappe.logger().info(f"[QB SYNC] Creating new customer: {display_name} (QB ID: {qb_id})")
@@ -286,19 +299,18 @@ def create_or_update_customer(qb_customer):
     customer.customer_name = display_name
     customer.customer_type = "Company" if qb_customer.get("CompanyName") else "Individual"
     customer.custom_quickbooks_customer_id = qb_id
-    customer.customer_group = "All Customer Groups"  # Customize if needed
-    customer.territory = "All Territories"           # Customize if needed
+    customer.customer_group = "All Customer Groups"
+    customer.territory = "All Territories"
 
     customer.save(ignore_permissions=True)
 
-    # Map Address (ignore BillAddr.Id, only used internally by QuickBooks)
     map_customer_address(customer.name, qb_customer)
-
-    # Map Contact (phone/email if available)
     map_customer_contact(customer.name, qb_customer)
 
+
 def map_customer_address(customer_name, qb_customer):
-    """Create billing and shipping address records."""
+    """Create or update billing and shipping addresses."""
+
     address_fields = [
         ("BillAddr", "Billing"),
         ("ShipAddr", "Shipping")
@@ -312,7 +324,6 @@ def map_customer_address(customer_name, qb_customer):
         "CA": "Canada",
         "GB": "United Kingdom",
         "IN": "India"
-        # Add more if needed
     }
 
     for addr_field, addr_type in address_fields:
@@ -321,23 +332,23 @@ def map_customer_address(customer_name, qb_customer):
             continue
 
         address_name = f"{customer_name} - {addr_type}"
-        address_line = addr_data.get("Line1")
-        city = addr_data.get("City")
-        state = addr_data.get("CountrySubDivisionCode")
-        postal_code = addr_data.get("PostalCode")
 
-        # Resolve country safely
+        address_lines = [addr_data.get(f"Line{i}") for i in range(1, 4) if addr_data.get(f"Line{i}")]
+        address_line = "\n".join(address_lines) if address_lines else ""
+
+        city = addr_data.get("City", "")
+        state = addr_data.get("CountrySubDivisionCode", "")
+        postal_code = addr_data.get("PostalCode", "")
+
         raw_country = addr_data.get("Country")
-        country = country_map.get(raw_country, raw_country)
+        country = country_map.get(raw_country, raw_country or "")
         if not country:
             country = "Australia" if state == "NSW" else "United States"
 
-        # Validate country exists in ERPNext
         if not frappe.db.exists("Country", country):
             frappe.logger().warn(f"[Address Mapping] Unknown country '{country}' for {address_name}. Defaulting to 'Australia'")
             country = "Australia"
 
-        # Check if address already exists
         existing = frappe.db.exists("Address", {"address_title": address_name, "address_type": addr_type})
         if existing:
             address = frappe.get_doc("Address", existing)
@@ -355,18 +366,19 @@ def map_customer_address(customer_name, qb_customer):
 
         address.save(ignore_permissions=True)
 
+
 def map_customer_contact(customer_name, qb_customer):
-    """Create contact person linked to customer."""
-    phone = qb_customer.get("PrimaryPhone", {}).get("FreeFormNumber")
-    first_name = qb_customer.get("GivenName", "")
-    last_name = qb_customer.get("FamilyName", "")
+    """Create or update contact person linked to customer."""
+
+    phone = qb_customer.get("PrimaryPhone", {}).get("FreeFormNumber", "")
+    first_name = qb_customer.get("GivenName", "") or ""
+    last_name = qb_customer.get("FamilyName", "") or ""
     full_name = f"{first_name} {last_name}".strip()
-    email = qb_customer.get("PrimaryEmailAddr", {}).get("Address")
+    email = qb_customer.get("PrimaryEmailAddr", {}).get("Address", "")
 
-    if not phone and not full_name:
-        return  # No contact info to save
+    if not phone and not full_name and not email:
+        return  # No meaningful contact info
 
-    # Try to find an existing contact with same phone and name
     existing_contacts = frappe.get_all("Contact", filters={
         "first_name": first_name,
         "last_name": last_name,
@@ -376,11 +388,9 @@ def map_customer_contact(customer_name, qb_customer):
     contact = None
     for contact_entry in existing_contacts:
         doc = frappe.get_doc("Contact", contact_entry.name)
-        # Check if the link exists
-        for link in doc.links:
-            if link.link_doctype == "Customer" and link.link_name == customer_name:
-                contact = doc
-                break
+        if any(link.link_doctype == "Customer" and link.link_name == customer_name for link in doc.links):
+            contact = doc
+            break
 
     if not contact:
         contact = frappe.new_doc("Contact")
@@ -391,7 +401,6 @@ def map_customer_contact(customer_name, qb_customer):
     if email:
         contact.email_id = email
 
-    # Prevent duplicate link entry
     if not any(link.link_doctype == "Customer" and link.link_name == customer_name for link in contact.links):
         contact.append("links", {
             "link_doctype": "Customer",
