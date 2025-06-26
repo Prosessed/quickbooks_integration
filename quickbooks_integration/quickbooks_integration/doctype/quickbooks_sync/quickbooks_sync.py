@@ -309,7 +309,7 @@ def create_or_update_customer(qb_customer):
 
 
 def map_customer_address(customer_name, qb_customer):
-    """Create or update billing and shipping addresses with 'Unknown' defaults."""
+    """Create or update billing and shipping addresses with proper customer linking."""
 
     address_fields = [
         ("BillAddr", "Billing"),
@@ -362,18 +362,22 @@ def map_customer_address(customer_name, qb_customer):
         address.state = state
         address.pincode = postal_code
         address.country = country
-        address.customer = customer_name
+
+        # Remove old links if any
+        address.links = []
+        address.append("links", {
+            "link_doctype": "Customer",
+            "link_name": customer_name
+        })
 
         address.save(ignore_permissions=True)
 
-
 def map_customer_contact(customer_name, qb_customer):
-    """Create or update contact person linked to customer with 'Unknown' defaults."""
+    """Create or update contact person linked to customer with proper customer linking."""
 
     phone = qb_customer.get("PrimaryPhone", {}).get("FreeFormNumber", "") or "Unknown"
     first_name = qb_customer.get("GivenName", "") or "Unknown"
     last_name = qb_customer.get("FamilyName", "") or "Unknown"
-    full_name = f"{first_name} {last_name}".strip()
     email = qb_customer.get("PrimaryEmailAddr", {}).get("Address", "")
 
     existing_contacts = frappe.get_all("Contact", filters={
@@ -398,11 +402,12 @@ def map_customer_contact(customer_name, qb_customer):
     if email:
         contact.email_id = email
 
-    if not any(link.link_doctype == "Customer" and link.link_name == customer_name for link in contact.links):
-        contact.append("links", {
-            "link_doctype": "Customer",
-            "link_name": customer_name
-        })
+    # Remove old links if any
+    contact.links = []
+    contact.append("links", {
+        "link_doctype": "Customer",
+        "link_name": customer_name
+    })
 
     contact.save(ignore_permissions=True)
 
@@ -527,7 +532,6 @@ def sync_supplier_background():
     frappe.enqueue(sync_suppliers_from_quickbooks, queue='long', timeout=300)
     frappe.msgprint("Supplier sync from QuickBooks has been started in the background.")
 
-
 def sync_suppliers_from_quickbooks():
     """Pull suppliers from QuickBooks and sync into ERPNext with pagination."""
     frappe.logger().info("[QB SYNC] Started supplier sync job")
@@ -577,7 +581,6 @@ def sync_suppliers_from_quickbooks():
 
     frappe.logger().info("[QB SYNC] Completed supplier sync job")
 
-
 def create_or_update_supplier(qb_supplier):
     """Create or update supplier in ERPNext based on QuickBooks supplier data."""
 
@@ -605,14 +608,11 @@ def create_or_update_supplier(qb_supplier):
 
     supplier.save(ignore_permissions=True)
 
-
-
 def sync_purchase_invoice_to_quickbooks(doc, method):
     refresh_quickbooks_access_token()
 
     """Hook function to sync Purchase Invoice to QuickBooks on submit."""
     sync_single_purchase_invoice_to_quickbooks(doc.name)
-
 
 @frappe.whitelist()
 def sync_single_purchase_invoice_to_quickbooks(purchase_invoice_name):
