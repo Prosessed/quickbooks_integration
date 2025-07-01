@@ -1,3 +1,4 @@
+import json
 import frappe
 import requests
 from frappe import _
@@ -124,10 +125,22 @@ def refresh_quickbooks_access_token():
 
 
 
-def sync_sales_invoice_cancellation(doc, method):
+@frappe.whitelist(allow_guest=True)
+def enqueue_sync_invoice_cancellation_to_quickbooks(doc, method):
+    """Enqueue the sync invoice cancellation job to QuickBooks"""
+    frappe.msgprint("Invoice synchronization with QuickBooks has started.", indicator="green")
+    # Pass only doc.name (which is the doc_name) when enqueuing
+    frappe.enqueue(sync_sales_invoice_cancellation, queue='long', doc_name=doc.name)
+
+
+
+
+def sync_sales_invoice_cancellation(doc_name):
     """
     Called via Frappe doc_events on Sales Invoice cancel.
     """
+    # Fetch the Sales Invoice document using the doc_name
+    doc = frappe.get_doc("Sales Invoice", doc_name)
 
     qb_invoice_id = doc.get("custom_quickbooks_invoice_id")
 
@@ -339,3 +352,132 @@ def cancel_quickbooks_purchase_order(purchase_order_id):
         frappe.throw(_("Failed to cancel Purchase Order in QuickBooks. Error: {0}").format(str(e)))
 
     return _("Purchase Order {0} has been successfully cancelled in QuickBooks.").format(purchase_order_id)
+
+
+@frappe.whitelist(allow_guest=True)
+def sync_selected_sales_invoices(selected_si):
+    """Enqueue the selected sales invoices job to QuickBooks"""
+    frappe.msgprint("Selected Sales Invoices synchronization with QuickBooks has started.", indicator="green")
+
+    # Ensure the argument is a list of names
+    if isinstance(selected_si, str):
+        selected_si = json.loads(selected_si)
+
+    # Fetch the selected sales invoices
+    unsynced_invoices = frappe.get_all('Sales Invoice', filters={'name': ['in', selected_si], 'is_synced': 0}, fields=['name'])
+
+    if unsynced_invoices:
+        for invoice in unsynced_invoices:
+            # Enqueue the sync job for each unsynced invoice
+            frappe.enqueue('quickbooks_integration.api.sync_single_sales_invoice',
+                           docname=invoice['name'], queue='long')
+
+        frappe.msgprint(f"{len(unsynced_invoices)} invoices have been added to the sync queue.", indicator="green")
+    else:
+        frappe.msgprint("No unsynced invoices found.", indicator="orange")
+
+    return "Bulk sync jobs for selected invoices have been enqueued."
+
+
+
+@frappe.whitelist(allow_guest=True)
+def sync_single_sales_invoice(docname):
+    """Sync a single Sales Invoice to QuickBooks"""
+    doc = frappe.get_doc("Sales Invoice", docname)
+    refresh_quickbooks_access_token()
+
+    settings = frappe.get_doc("QuickBooks Settings")
+    url = f"{settings.base_url.strip().rstrip('/')}/v3/company/{settings.quickbooks_company_id}/invoice?minorversion={settings.minor_version or '75'}"
+    headers = {
+        "Authorization": f"Bearer {settings.access_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    customer = frappe.get_doc("Customer", doc.customer)
+    qb_customer_id = customer.get("custom_quickbooks_customer_id") or "1"
+    send_item = (settings.send_item) == 1
+
+    def get_tax_code(item):
+        if not item.item_tax_template:
+            return "5"
+        try:
+            return frappe.get_doc("Item Tax Template", item.item_tax_template).custom_quickbooks_gst_id or "5"
+        except Exception as e:
+            frappe.log_error(f"Error fetching GST from {item.item_tax_template}", str(e))
+            return "5"
+
+    # Prepare line items for QuickBooks API
+    line_items = []
+    for item in doc.items:
+        detail = {
+            "Qty": item.qty,
+            "UnitPrice": float(item.rate),
+            "TaxCodeRef": {"value": get_tax_code(item)}
+        }
+        if send_item:
+            qb_item_id = frappe.db.get_value("Item", item.item_code, "custom_quickbooks_item_id")
+            if qb_item_id:
+                detail["ItemRef"] = {"value": qb_item_id, "name": item.item_name}
+
+        line_items.append({
+            "DetailType": "SalesItemLineDetail",
+            "Amount": float(item.amount),
+            "Description": item.description or item.item_name,
+            "SalesItemLineDetail": detail
+        })
+
+    payload = {
+        "DocNumber": doc.name,
+        "CustomerRef": {"value": qb_customer_id, "name": doc.customer},
+        "Line": line_items,
+        "ApplyTaxAfterDiscount": False,
+        "CustomerMemo": {"value": "Generated from ERPNext"},
+        "PrintStatus": "NeedToPrint",
+        "EmailStatus": "NotSet"
+    }
+
+    try:
+        # Making the API request to QuickBooks
+        res = requests.post(url, headers=headers, data=json.dumps(payload))
+
+        if res.status_code == 200 and (qbo_id := res.json().get("Invoice", {}).get("Id")):
+            doc.db_set("custom_quickbooks_invoice_id", qbo_id)
+            doc.db_set("status", "Confirmed")
+            doc.db_set("is_synced", 1)
+            create_quickbooks_sync_record(doc, status="Confirmred", synced=1)
+            frappe.db.commit()
+
+            frappe.logger().info(f"[QBO] Sales Invoice {doc.name} synced as QBO Invoice {qbo_id}")
+        else:
+            frappe.log_error("QuickBooks Invoice Sync Failed", f"Sales Invoice: {doc.name}\nStatus: {res.status_code}\nResponse: {res.text}")
+            create_quickbooks_sync_record(doc, status="Failure", synced=0)
+    except Exception as e:
+        frappe.log_error("QuickBooks Invoice Sync Error", f"Sales Invoice: {doc.name}\nError: {str(e)}")
+        create_quickbooks_sync_record(doc, status="Failure", synced=0)
+
+    frappe.db.commit()
+
+
+
+def create_quickbooks_sync_record(doc, status, synced):
+    try:
+        qb_sync_meta = frappe.get_doc("QuickBooks Sync")
+        if qb_sync_meta:
+            quickbooks_sync = frappe.get_doc("QuickBooks Sync", doc.name) or frappe.get_doc({
+                "doctype": "QuickBooks Sync",
+                "parent": doc.name,
+                "parenttype": "Sales Invoice",
+                "sales_invoice_list": [{
+                    "invoice_name": doc.name,
+                    "quickbooks_invoice_status": status,
+                    "is_synced": synced,
+                }]
+            })
+            quickbooks_sync.insert(ignore_permissions=True)
+            frappe.db.commit()
+            frappe.logger().info(f"QuickBooks Sync for {doc.name} inserted with status {status}.")
+        else:
+            frappe.throw("QuickBooks Sync DocType not found.")
+    except Exception as e:
+        frappe.log_error(f"Error inserting QuickBooks Sync for {doc.name}", str(e))

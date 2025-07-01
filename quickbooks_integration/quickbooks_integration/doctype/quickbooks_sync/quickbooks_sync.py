@@ -7,7 +7,7 @@ from frappe.model.document import Document
 import requests
 import frappe
 from frappe.utils import nowdate
-from quickbooks_integration.api import refresh_quickbooks_access_token
+from quickbooks_integration.api import create_quickbooks_sync_record, refresh_quickbooks_access_token
 
 class QuickBooksSync(Document):
 	pass
@@ -234,13 +234,19 @@ def get_billing_address_for_customer(customer_name):
 
     return None
 
-def sync_invoice_to_quickbooks(doc, method):
+@frappe.whitelist(allow_guest=True)
+def enqueue_sync_invoice_to_quickbooks(doc, method):
+    """Enqueue the sync invoice job to QuickBooks"""
+    frappe.msgprint("Invoice synchronization with QuickBooks has started.", indicator="green")
+    frappe.enqueue(sync_invoice_to_quickbooks, queue='long', docname=doc.name)
 
+
+def sync_invoice_to_quickbooks(docname):
+    doc = frappe.get_doc("Sales Invoice", docname)
     refresh_quickbooks_access_token()
 
     settings = frappe.get_doc("QuickBooks Settings")
     url = f"{settings.base_url.strip().rstrip('/')}/v3/company/{settings.quickbooks_company_id}/invoice?minorversion={settings.minor_version or '75'}"
-
     headers = {
         "Authorization": f"Bearer {settings.access_token}",
         "Content-Type": "application/json",
@@ -291,13 +297,21 @@ def sync_invoice_to_quickbooks(doc, method):
 
     try:
         res = requests.post(url, headers=headers, data=json.dumps(payload))
+
         if res.status_code == 200 and (qbo_id := res.json().get("Invoice", {}).get("Id")):
             doc.db_set("custom_quickbooks_invoice_id", qbo_id)
             frappe.logger().info(f"[QBO] Sales Invoice {doc.name} synced as QBO Invoice {qbo_id}")
+            create_quickbooks_sync_record(doc, status="Confirmed", synced=1)
+
         else:
             frappe.log_error("QuickBooks Invoice Sync Failed", f"Sales Invoice: {doc.name}\nStatus: {res.status_code}\nResponse: {res.text}")
+            create_quickbooks_sync_record(doc, status="Failure", synced=0)
     except Exception as e:
         frappe.log_error("QuickBooks Invoice Sync Error", f"Sales Invoice: {doc.name}\nError: {str(e)}")
+        create_quickbooks_sync_record(doc, status="Failure", synced=0)
+
+    frappe.db.commit()
+
 
 @frappe.whitelist()
 def start_customer_background():
@@ -389,8 +403,18 @@ def create_or_update_customer(qb_customer):
 
     customer.save(ignore_permissions=True)
 
-    map_customer_address(customer.name, qb_customer)
-    map_customer_contact(customer.name, qb_customer)
+
+
+    does_address_exist = frappe.db.exists("Address", {"address_title": f"{display_name} - Billing", "address_type": "Billing"})
+
+    does_contact_exist = frappe.db.exists("Contact", {"first_name": display_name})
+
+    if not does_address_exist:
+        map_customer_address(customer.name, qb_customer)
+
+    if not does_contact_exist:
+        map_customer_contact(customer.name, qb_customer)
+
 
 def map_customer_address(customer_name, qb_customer):
     """Create or update billing and shipping addresses with proper customer linking."""
@@ -447,53 +471,56 @@ def map_customer_address(customer_name, qb_customer):
         address.pincode = postal_code
         address.country = country
 
-        # Remove old links if any
-        address.links = []
-        address.append("links", {
-            "link_doctype": "Customer",
-            "link_name": customer_name
-        })
+        # Check if the customer is already linked to the address
+        link_exists = any(link.link_name == customer_name and link.link_doctype == "Customer" for link in address.links)
+
+        if not link_exists:
+            # Only append the link if it's not already present
+            address.append("links", {
+                "link_doctype": "Customer",
+                "link_name": customer_name
+            })
 
         address.save(ignore_permissions=True)
 
+
+
 def map_customer_contact(customer_name, qb_customer):
     """Create or update contact person linked to customer with proper customer linking."""
-
-    phone = qb_customer.get("PrimaryPhone", {}).get("FreeFormNumber", "") or "Unknown"
-    first_name = qb_customer.get("GivenName", "") or "Unknown"
-    last_name = qb_customer.get("FamilyName", "") or "Unknown"
+    phone = qb_customer.get("PrimaryPhone", {}).get("FreeFormNumber", "") or "1234567890"
     email = qb_customer.get("PrimaryEmailAddr", {}).get("Address", "")
+    first_name = customer_name
 
-    existing_contacts = frappe.get_all("Contact", filters={
-        "first_name": first_name,
-        "last_name": last_name,
-        "phone": phone
-    }, fields=["name"])
-
-    contact = None
-    for contact_entry in existing_contacts:
-        doc = frappe.get_doc("Contact", contact_entry.name)
-        if any(link.link_doctype == "Customer" and link.link_name == customer_name for link in doc.links):
-            contact = doc
-            break
-
-    if not contact:
+    existing = frappe.db.exists("Contact", {"first_name": customer_name})
+    if existing:
+        contact = frappe.get_doc("Contact", existing)
+    else:
         contact = frappe.new_doc("Contact")
 
-    contact.first_name = first_name
-    contact.last_name = last_name
-    contact.phone = phone
-    if email:
-        contact.email_id = email
+    # add contact details email in email_no child table
 
-    # Remove old links if any
-    contact.links = []
+    contact.first_name = first_name
+    if email:
+        contact.append("email_ids", {
+            "email_id": email,
+            "is_primary": 1
+        })
+
+    if phone:
+        contact.append("phone_nos", {
+            "phone": phone,
+            "is_primary_mobile_no": 1
+        })
+
     contact.append("links", {
-        "link_doctype": "Customer",
-        "link_name": customer_name
-    })
+                    "link_doctype": "Customer",
+                    "link_name": contact
+                })
 
     contact.save(ignore_permissions=True)
+
+
+
 
 @frappe.whitelist()
 def start_item_background():

@@ -13,7 +13,14 @@
   "items_tab",
   "sync_items",
   "suppliers_tab",
-  "sync_suppliers"
+  "sync_suppliers",
+  "invoice_list_tab",
+  "sync_sales_invoices_section",
+  "sync_sales_invoices",
+  "column_break_cxpu",
+  "count",
+  "sales_invoice_list_section",
+  "sales_invoice_list"
  ],
  "fields": [
   {
@@ -60,13 +67,50 @@
    "fieldname": "sync_customers_to_quickbooks",
    "fieldtype": "Button",
    "label": "Sync Customers to Quickbooks"
+  },
+  {
+   "fieldname": "invoice_list_tab",
+   "fieldtype": "Tab Break",
+   "label": "Invoice List"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "sales_invoice_list_section",
+   "fieldtype": "Section Break",
+   "label": "Sales Invoice List"
+  },
+  {
+   "fieldname": "sales_invoice_list",
+   "fieldtype": "Table",
+   "label": "Sales Invoice List",
+   "options": "Sales Invoice List"
+  },
+  {
+   "description": "Prosessed ---> Quickbooks",
+   "fieldname": "sync_sales_invoices_section",
+   "fieldtype": "Section Break",
+   "label": "Sync Sales Invoices"
+  },
+  {
+   "fieldname": "sync_sales_invoices",
+   "fieldtype": "Button",
+   "label": "Sync Sales Invoices"
+  },
+  {
+   "fieldname": "column_break_cxpu",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "count",
+   "fieldtype": "Data",
+   "label": "Count"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-06-25 13:19:48.690833",
+ "modified": "2025-07-01 19:02:23.085640",
  "modified_by": "Administrator",
  "module": "Quickbooks Integration",
  "name": "QuickBooks Sync",

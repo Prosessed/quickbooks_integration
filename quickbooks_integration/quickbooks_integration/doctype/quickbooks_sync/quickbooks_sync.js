@@ -6,6 +6,7 @@ frappe.ui.form.on("QuickBooks Sync", {
         frm.get_field("sync_sales_order").$input.addClass('btn-primary');
         frm.get_field("sync_items").$input.addClass('btn-primary');
         frm.get_field("sync_suppliers").$input.addClass('btn-primary');
+        frm.get_field("sync_sales_invoices").$input.addClass('btn-primary');
 
     },
 
@@ -59,6 +60,35 @@ frappe.ui.form.on("QuickBooks Sync", {
             }
         });
     },
+    sync_selected_sales_invoices: (frm) => {
+        if (frm.doc.si_count) {
+            const selected_invoices = frm.doc.sales_invoice_list.filter((e) => e.__checked);
+
+            if (selected_invoices.length > 0) {
+                frm.call({
+                    doc: cur_frm.doc,
+                    args: {
+                        selected_si: selected_invoices.map((e) => e.name),
+                    },
+                    method: 'quickbooks_integration.api.sync_selected_sales_invoices',
+                    freeze: true,
+                    freeze_msg: __("Syncing selected Sales Invoices to QuickBooks..."),
+                    callback: (r) => {
+                        if (!r.exc) {
+                            frappe.msgprint(r.message);
+                        } else {
+                            frappe.msgprint(r.message);
+                        }
+                    }
+                });
+            } else {
+                frappe.msgprint("Please select invoices to sync.", "Warning", "orange");
+            }
+        }
+    }
+
+
+
 
     // sync_sales_order(frm) {
     //     frappe.call({

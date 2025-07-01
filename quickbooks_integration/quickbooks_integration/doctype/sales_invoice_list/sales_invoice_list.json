@@ -1,0 +1,56 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2025-07-01 18:27:37.691347",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "invoice_name",
+  "status",
+  "quickbooks_invoice_status",
+  "is_synced"
+ ],
+ "fields": [
+  {
+   "fieldname": "invoice_name",
+   "fieldtype": "Link",
+   "label": "Invoice Name",
+   "options": "Sales Invoice"
+  },
+  {
+   "fieldname": "status",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Status"
+  },
+  {
+   "depends_on": "is_synced",
+   "fieldname": "quickbooks_invoice_status",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Quickbooks Invoice Status"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_synced",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "is Synced"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2025-07-01 18:52:06.740049",
+ "modified_by": "Administrator",
+ "module": "Quickbooks Integration",
+ "name": "Sales Invoice List",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": []
+}
