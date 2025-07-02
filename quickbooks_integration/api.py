@@ -514,7 +514,7 @@ def create_item_on_quickbooks(item_name):
         "Name": item_doc.item_name,
         "Taxable": True,
         "Type": "Service",  # Adjust based on your item type
-        "ExpenseAccountRef": {"name": "Cost of Goods Sold", "value": "56"}
+        "IncomeAccountRef": {"name": "Sales of Product Income", "value": "79"}
     }
 
     if gst_code:
@@ -561,77 +561,6 @@ def get_tax_code_for_item(item_name):
 
     frappe.logger().warn(f"[Item Sync] No tax templates found for item: {item_name}")
     return None
-
-
-
-
-# @frappe.whitelist(allow_guest=True)
-# def sync_credit_memo_to_quickbooks(docname):
-#     invoice = frappe.get_doc("Sales Invoice", docname)
-#     sync_credit_memo(invoice)
-
-# def sync_credit_memo(invoice):
-#     refresh_quickbooks_access_token()
-
-#     settings = frappe.get_doc("QuickBooks Settings")
-#     url = f"{settings.base_url}/v3/company/{settings.quickbooks_company_id}/creditmemo?minorversion={settings.minor_version or '75'}"
-#     headers = {
-#         "Authorization": f"Bearer {settings.access_token}",
-#         "Content-Type": "application/json"
-#     }
-
-#     def get_tax_code(item):
-#         return frappe.get_doc("Item Tax Template", item.item_tax_template).custom_quickbooks_gst_id or "5" if item.item_tax_template else "5"
-
-#     line_items = [{
-#         "DetailType": "SalesItemLineDetail",
-#         "Amount": abs(item.qty * item.rate),
-#         "SalesItemLineDetail": {
-#             "Qty": -item.qty,
-#             "UnitPrice": -item.rate,
-#             "ItemRef": {"value": frappe.db.get_value("Item", item.item_code, "custom_quickbooks_item_id")},
-#             "TaxCodeRef": {"value": get_tax_code(item)}
-#         }
-#     } for item in invoice.items]
-
-#     total_amount = abs(invoice.grand_total)
-
-
-#     if total_amount >= 0:
-#         qb_customer_id = frappe.db.get_value("Customer", invoice.customer, "custom_quickbooks_customer_id")
-#         if not qb_customer_id:
-#             frappe.throw(f"QuickBooks Customer ID is missing for Customer {invoice.customer}")
-
-#         payload = {
-#             "DocNumber": invoice.name,
-#             "CustomerRef": {"value": qb_customer_id},
-#             "Line": line_items,
-#             "CustomerMemo": {"value": "Credit Memo from ERPNext"}
-#         }
-
-#         try:
-#             res = requests.post(url, headers=headers, data=json.dumps(payload))
-
-#             if res.status_code != 200:
-#                 error_message = f"Failed to sync Credit Memo {invoice.name} - Status Code: {res.status_code} - Response Body: {res.text}"
-#                 frappe.log_error("QuickBooks Credit Memo Sync Failed", error_message)
-
-#             res.raise_for_status()
-
-#             if res.status_code == 200:
-#                 qb_id = res.json().get("CreditMemo", {}).get("Id")
-#                 if qb_id:
-#                     frappe.logger().info(f"Credit Memo {invoice.name} synced as QuickBooks Credit Memo {qb_id}")
-
-#         except requests.exceptions.RequestException as e:
-#             error_message = f"Error syncing Credit Memo {invoice.name}: {str(e)} - Response Body: {res.text if res else 'No response from server'}"
-#             frappe.log_error("QuickBooks Credit Memo Sync Error", error_message)
-#     else:
-#         frappe.throw(f"Credit Memo Total Amount must be zero or greater. Current total: {total_amount}")
-
-import requests
-import json
-import frappe
 
 @frappe.whitelist(allow_guest=True)
 def sync_credit_memo_to_quickbooks(docname):
