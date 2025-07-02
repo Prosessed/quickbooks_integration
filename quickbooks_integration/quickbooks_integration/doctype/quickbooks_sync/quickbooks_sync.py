@@ -807,7 +807,7 @@ def sync_items_to_quickbooks_background():
     for item in items:
         # Enqueue each item for sync
         frappe.enqueue('quickbooks_integration.api.create_item_on_quickbooks',
-                       queue='long',
+                       queue='short',
                        timeout=300,
                        item_name=item.name)
 
