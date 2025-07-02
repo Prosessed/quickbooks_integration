@@ -804,6 +804,8 @@ def sync_items_to_quickbooks_background():
     # Fetch items where custom_quickbooks_item_id is NULL
     items = frappe.get_all("Item", filters={"custom_quickbooks_item_id": None}, fields=["name"])
 
+    frappe.log_error(f"[Item Sync] Found {len(items)} items to sync to QuickBooks.")
+
     for item in items:
         # Enqueue each item for sync
         frappe.enqueue('quickbooks_integration.api.create_item_on_quickbooks',
