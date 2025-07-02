@@ -7,6 +7,7 @@ frappe.ui.form.on("QuickBooks Sync", {
         frm.get_field("sync_items").$input.addClass('btn-primary');
         frm.get_field("sync_suppliers").$input.addClass('btn-primary');
         frm.get_field("sync_sales_invoices").$input.addClass('btn-primary');
+        frm.get_field("sync_items_to_quickbooks").$input.addClass('btn-primary');
 
     },
 
@@ -85,7 +86,20 @@ frappe.ui.form.on("QuickBooks Sync", {
                 frappe.msgprint("Please select invoices to sync.", "Warning", "orange");
             }
         }
-    }
+    },
+
+    sync_items_to_quickbooks(frm) {
+        frappe.call({
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_items_to_quickbooks_background",
+            args: {},
+            callback: (r) => {
+                if (!r.exc) {
+                    frappe.msgprint("Item sync to quickbooks has started in background.");
+                }
+            }
+        });
+    },
+
 
 
 

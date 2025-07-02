@@ -33,6 +33,7 @@
   "allow_customer_sync_prosessed",
   "items_section",
   "allow_item_sync_from_quickbooks",
+  "allow_item_sync_to_quickbooks",
   "column_break_qmue",
   "send_item",
   "suppliers_section",
@@ -225,13 +226,20 @@
    "fieldname": "allow_supplier_sync_from_quickbooks",
    "fieldtype": "Check",
    "label": "Allow Supplier Sync from Quickbooks"
+  },
+  {
+   "default": "0",
+   "description": "Prosessed --->  Quickbooks ",
+   "fieldname": "allow_item_sync_to_quickbooks",
+   "fieldtype": "Check",
+   "label": "Allow Item Sync to Quickbooks"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-06-25 13:26:06.474123",
+ "modified": "2025-07-02 10:49:02.824701",
  "modified_by": "Administrator",
  "module": "Quickbooks Integration",
  "name": "QuickBooks Settings",

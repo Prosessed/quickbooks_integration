@@ -12,6 +12,8 @@
   "sync_customers_to_quickbooks",
   "items_tab",
   "sync_items",
+  "column_break_gjaz",
+  "sync_items_to_quickbooks",
   "suppliers_tab",
   "sync_suppliers",
   "invoice_list_tab",
@@ -39,6 +41,7 @@
    "label": "Items"
   },
   {
+   "description": "Quickbooks ---> Prosessed",
    "fieldname": "sync_items",
    "fieldtype": "Button",
    "label": "Sync Items"
@@ -104,13 +107,23 @@
    "fieldname": "count",
    "fieldtype": "Data",
    "label": "Count"
+  },
+  {
+   "fieldname": "column_break_gjaz",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "Prosessed ---> Quickbooks",
+   "fieldname": "sync_items_to_quickbooks",
+   "fieldtype": "Button",
+   "label": "Sync Items to Quickbooks"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-07-01 19:02:23.085640",
+ "modified": "2025-07-02 10:29:03.520356",
  "modified_by": "Administrator",
  "module": "Quickbooks Integration",
  "name": "QuickBooks Sync",

@@ -481,3 +481,79 @@ def create_quickbooks_sync_record(doc, status, synced):
             frappe.throw("QuickBooks Sync DocType not found.")
     except Exception as e:
         frappe.log_error(f"Error inserting QuickBooks Sync for {doc.name}", str(e))
+
+def create_item_on_quickbooks(item_name):
+    refresh_quickbooks_access_token()
+
+    item_doc = frappe.get_doc("Item", item_name)
+
+    if item_doc.custom_quickbooks_item_id:
+        frappe.msgprint(_("Item {0} already exists in QuickBooks with ID {1}.").format(item_name, item_doc.custom_quickbooks_item_id))
+        return
+
+    settings = frappe.get_single("QuickBooks Settings")
+    access_token = settings.access_token
+    realm_id = settings.quickbooks_company_id
+    base_url = settings.base_url.rstrip("/").replace("https://", "").strip("/")
+    url = f"https://{base_url}/v3/company/{realm_id}/item?minorversion={settings.minor_version or '75'}"
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    # Get the QuickBooks SalesTaxCodeRef based on the Item's Tax Template
+    gst_code = get_tax_code_for_item(item_name)
+
+    payload = {
+        "Name": item_doc.item_name,
+        "Taxable": True,
+        "Type": "Service",  # Adjust based on your item type
+        "ExpenseAccountRef": {"name": "Cost of Goods Sold", "value": "56"}
+    }
+
+    if gst_code:
+        payload["PurchaseTaxCodeRef"] = {"value": gst_code}
+
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+
+        data = response.json()
+        quickbooks_id = data.get("Item", {}).get("Id")
+
+        if quickbooks_id:
+            item_doc.custom_quickbooks_item_id = quickbooks_id
+            item_doc.save(ignore_permissions=True)
+            frappe.db.commit()
+            frappe.msgprint(_("Item {0} created successfully in QuickBooks with ID {1}.").format(item_name, quickbooks_id))
+        else:
+            frappe.throw(_("QuickBooks API returned no valid Item ID for the item {0}.").format(item_name))
+
+    except requests.RequestException as e:
+        frappe.log_error(message=f"QuickBooks API Error: {response.text}", title="QuickBooks API Request Failed")
+        frappe.throw(_("Failed to create Item in QuickBooks. Error: {0}").format(str(e)))
+
+    except Exception as e:
+        frappe.log_error(f"Unexpected error while creating item {item_name}: {str(e)}", title="Unexpected Error in Item Sync")
+        frappe.throw(_("An unexpected error occurred while creating the item {0} in QuickBooks.").format(item_name))
+
+def get_tax_code_for_item(item_name):
+    item_doc = frappe.get_doc("Item", item_name)
+
+    for tax_row in item_doc.taxes:
+        tax_template_name = tax_row.item_tax_template
+        tax_template = frappe.get_all("Item Tax Template",
+                                      filters={"name": tax_template_name},
+                                      fields=["custom_quickbooks_gst_id"],
+                                      limit=1)
+
+        if tax_template:
+            gst_id = tax_template[0].custom_quickbooks_gst_id
+            return gst_id
+        else:
+            frappe.logger().warn(f"[Item Sync] No Item Tax Template found for tax template: {tax_template_name}")
+
+    frappe.logger().warn(f"[Item Sync] No tax templates found for item: {item_name}")
+    return None

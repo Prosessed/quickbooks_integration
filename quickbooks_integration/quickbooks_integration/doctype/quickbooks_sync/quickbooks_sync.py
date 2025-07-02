@@ -611,7 +611,7 @@ def create_or_update_item(qb_item):
                 frappe.logger().warn(f"[Item Sync] No Item Tax Template found for QuickBooks GST Code: {tax_code}")
 
     item.item_name = name
-    item.item_code = qb_item.get("Name")
+    # item.item_code = qb_item.get("Name")
     item.item_group = "All Item Groups"
     item.custom_quickbooks_item_id = qb_id
     item.item_type = item_type
@@ -789,3 +789,28 @@ def sync_single_purchase_invoice_to_quickbooks(purchase_invoice_name):
         frappe.msgprint(f"Purchase Invoice {invoice.name} synced as Purchase Order in QuickBooks. ID: {qb_po_id}")
     else:
         frappe.throw(f"QuickBooks sync failed. Response: {response.text}")
+
+
+@frappe.whitelist()
+def sync_items_to_quickbooks_background():
+    """Enqueue item sync job to run in background."""
+
+    settings = frappe.get_doc("QuickBooks Settings")
+    if settings.allow_item_sync_to_quickbooks != 1:
+        frappe.msgprint('Navigate to Quickbooks Settings & Please enable Item sync to continue', title="QuickBooks Item Sync Disabled",
+                        indicator="red")
+        return
+
+    # Fetch items where custom_quickbooks_item_id is NULL
+    items = frappe.get_all("Item", filters={"custom_quickbooks_item_id": None}, fields=["name"])
+
+    for item in items:
+        # Enqueue each item for sync
+        frappe.enqueue('quickbooks_integration.api.create_item_on_quickbooks',
+                       queue='long',
+                       timeout=300,
+                       item_name=item.name)
+
+    frappe.msgprint("Item sync to QuickBooks has been started in the background.")
+
+
