@@ -802,7 +802,7 @@ def sync_items_to_quickbooks_background():
         return
 
     # Fetch items where custom_quickbooks_item_id is NULL
-    items = frappe.get_all("Item", filters={"custom_quickbooks_item_id": None}, fields=["name"])
+    items = frappe.get_all('Item', filters={'custom_quickbooks_item_id': ('in', [None, ''])}, fields=['name'])
 
     frappe.log_error(f"[Item Sync] Found {len(items)} items to sync to QuickBooks.")
 
