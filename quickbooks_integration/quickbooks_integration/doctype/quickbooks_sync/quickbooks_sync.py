@@ -7,7 +7,7 @@ from frappe.model.document import Document
 import requests
 import frappe
 from frappe.utils import nowdate
-from quickbooks_integration.api import create_quickbooks_sync_record, refresh_quickbooks_access_token
+from quickbooks_integration.api import create_quickbooks_sync_record, refresh_quickbooks_access_token, sync_credit_memo_to_quickbooks
 
 class QuickBooksSync(Document):
 	pass
@@ -234,11 +234,31 @@ def get_billing_address_for_customer(customer_name):
 
     return None
 
+
+@frappe.whitelist(allow_guest=True)
+def handle_invoice_save(doc, method):
+    """Decide whether to sync Sales Invoice or Credit Note to QuickBooks"""
+    if doc.is_return:
+
+        enqueue_sync_credit_note_to_quickbooks(doc, method)
+
+    else:
+        # Otherwise, sync the regular sales invoice
+        enqueue_sync_invoice_to_quickbooks(doc ,method)
+
+
+
 @frappe.whitelist(allow_guest=True)
 def enqueue_sync_invoice_to_quickbooks(doc, method):
     """Enqueue the sync invoice job to QuickBooks"""
     frappe.msgprint("Invoice synchronization with QuickBooks has started.", indicator="green")
     frappe.enqueue(sync_invoice_to_quickbooks, queue='long', docname=doc.name)
+
+
+def enqueue_sync_credit_note_to_quickbooks(doc, method):
+    """Enqueue the sync invoice job to QuickBooks"""
+    frappe.msgprint("Credit Note synchronization with QuickBooks has started.", indicator="green")
+    frappe.enqueue(sync_credit_memo_to_quickbooks, queue='long', docname=doc.name)
 
 
 def sync_invoice_to_quickbooks(docname):
