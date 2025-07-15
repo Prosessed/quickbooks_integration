@@ -398,6 +398,67 @@ def sync_customers_from_quickbooks():
 
     frappe.logger().info("[QB SYNC] Completed customer sync job")
 
+# def create_or_update_customer(qb_customer):
+#     """Create or update customer in ERPNext based on QuickBooks customer data."""
+
+#     qb_id = qb_customer.get("Id")
+#     if not qb_id:
+#         frappe.logger().error("[QB SYNC] Missing Customer ID in QuickBooks data.")
+#         return
+
+#     display_name = qb_customer.get("DisplayName") or "Unknown Customer"
+#     company_name = qb_customer.get("CompanyName") or display_name
+
+#     existing = frappe.db.exists("Customer", {"custom_quickbooks_customer_id": qb_id})
+#     if existing:
+#         customer = frappe.get_doc("Customer", existing)
+#         frappe.logger().info(f"[QB SYNC] Updating customer: {display_name} (QB ID: {qb_id})")
+#     else:
+#         customer = frappe.new_doc("Customer")
+#         frappe.logger().info(f"[QB SYNC] Creating new customer: {display_name} (QB ID: {qb_id})")
+
+#     customer.customer_name = display_name
+#     customer.customer_type = "Company" if qb_customer.get("CompanyName") else "Individual"
+#     customer.custom_quickbooks_customer_id = qb_id
+#     customer.customer_group = "All Customer Groups"
+#     customer.territory = "All Territories"
+#     payment_term_name = qb_customer.get("SalesTermRef", {}).get("name")
+
+#     if payment_term_name:
+#         payment_term = frappe.db.exists("Payment Term", {"payment_term_name": payment_term_name})
+
+
+
+#         if not payment_term:
+#             payment_term = frappe.new_doc("Payment Term")
+#             payment_term.payment_term_name = payment_term_name
+#             payment_term.save(ignore_permissions=True)
+
+#         payment_term_template = frappe.db.exists("Payment Terms Template", {"template_name": payment_term_name})
+
+#         if not payment_term_template:
+#             payment_term_template = frappe.new_doc("Payment Terms Template")
+#             payment_term_template.template_name = payment_term_name
+#             payment_term_template.invoice_portion = 100
+#             payment_term_template.save(ignore_permissions=True)
+
+#         customer.payment_terms = payment_term_template
+
+
+#     customer.save(ignore_permissions=True)
+
+
+
+#     does_address_exist = frappe.db.exists("Address", {"address_title": f"{display_name} - Billing", "address_type": "Billing"})
+
+#     does_contact_exist = frappe.db.exists("Contact", {"first_name": display_name})
+
+#     if not does_address_exist:
+#         map_customer_address(customer.name, qb_customer)
+
+#     if not does_contact_exist:
+#         map_customer_contact(customer.name, qb_customer)
+
 def create_or_update_customer(qb_customer):
     """Create or update customer in ERPNext based on QuickBooks customer data."""
 
@@ -425,15 +486,14 @@ def create_or_update_customer(qb_customer):
     payment_term_name = qb_customer.get("SalesTermRef", {}).get("name")
 
     if payment_term_name:
+        # Check if the payment term already exists
         payment_term = frappe.db.exists("Payment Term", {"payment_term_name": payment_term_name})
-
-
-
         if not payment_term:
             payment_term = frappe.new_doc("Payment Term")
             payment_term.payment_term_name = payment_term_name
             payment_term.save(ignore_permissions=True)
 
+        # Check if Payment Term Template exists
         payment_term_template = frappe.db.exists("Payment Terms Template", {"template_name": payment_term_name})
 
         if not payment_term_template:
@@ -442,15 +502,26 @@ def create_or_update_customer(qb_customer):
             payment_term_template.invoice_portion = 100
             payment_term_template.save(ignore_permissions=True)
 
-        customer.payment_terms = payment_term_template
+        # Add the payment term to the terms table
+        terms_table = payment_term_template.get("terms")
+        new_term = {
+            "payment": payment_term_name,
+            "description": "Payment term associated with the customer",
+            "invoice_portion": 100,
+            "due_date_based_on": "Invoice Date",  # You can change this based on your needs
+            "credit_days": 30,  # You can set the default credit days
+        }
+        terms_table.append(new_term)
 
+        payment_term_template.save(ignore_permissions=True)
+
+        # Link the payment terms template to the customer
+        customer.payment_terms = payment_term_template
 
     customer.save(ignore_permissions=True)
 
-
-
+    # Handle customer address and contact creation
     does_address_exist = frappe.db.exists("Address", {"address_title": f"{display_name} - Billing", "address_type": "Billing"})
-
     does_contact_exist = frappe.db.exists("Contact", {"first_name": display_name})
 
     if not does_address_exist:
