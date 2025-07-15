@@ -440,7 +440,8 @@ def create_or_update_customer(qb_customer):
             payment_term_template.payment_term = payment_term_name
             payment_term_template.save(ignore_permissions=True)
 
-        customer.payment_terms = payment_term_template.name
+        customer.payment_terms = payment_term_template
+
 
     customer.save(ignore_permissions=True)
 
