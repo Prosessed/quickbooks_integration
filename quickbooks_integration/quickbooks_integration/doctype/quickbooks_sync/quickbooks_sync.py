@@ -558,50 +558,50 @@ def start_item_background():
     frappe.enqueue(item_sync, queue='long', timeout=300)
     frappe.msgprint("Item sync from QuickBooks has been started in the background.")
 
-# @frappe.whitelist()
-# def item_sync():
-#     """Sync items from QuickBooks to ERPNext with pagination support."""
-#     settings = frappe.get_doc("QuickBooks Settings")
-#     access_token = settings.access_token
-#     company_id = settings.quickbooks_company_id
-#     base_url = settings.base_url.strip().rstrip("/")
-#     minor_version = settings.minor_version or "75"
+@frappe.whitelist()
+def item_sync():
+    """Sync items from QuickBooks to ERPNext with pagination support."""
+    settings = frappe.get_doc("QuickBooks Settings")
+    access_token = settings.access_token
+    company_id = settings.quickbooks_company_id
+    base_url = settings.base_url.strip().rstrip("/")
+    minor_version = settings.minor_version or "75"
 
-#     start_position = 1
-#     max_results = 100  # QuickBooks allows max 100 per page
+    start_position = 1
+    max_results = 100  # QuickBooks allows max 100 per page
 
-#     while True:
-#         query = f"SELECT * FROM Item STARTPOSITION {start_position} MAXRESULTS {max_results}"
-#         url = f"{base_url}/v3/company/{company_id}/query?query={query.replace(' ', '%20')}&minorversion={minor_version}"
+    while True:
+        query = f"SELECT * FROM Item STARTPOSITION {start_position} MAXRESULTS {max_results}"
+        url = f"{base_url}/v3/company/{company_id}/query?query={query.replace(' ', '%20')}&minorversion={minor_version}"
 
-#         headers = {
-#             "Authorization": f"Bearer {access_token}",
-#             "Content-Type": "application/json",
-#             "Accept": "application/json"
-#         }
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
 
-#         try:
-#             response = requests.get(url, headers=headers)
-#             response.raise_for_status()
-#             data = response.json()
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
 
-#             items = data.get("QueryResponse", {}).get("Item", [])
-#             if not items:
-#                 break  # No more items to fetch
+            items = data.get("QueryResponse", {}).get("Item", [])
+            if not items:
+                break  # No more items to fetch
 
-#             for qb_item in items:
-#                 create_or_update_item(qb_item)
+            for qb_item in items:
+                create_or_update_item(qb_item)
 
-#             frappe.logger().info(f"[QB SYNC] Fetched {len(items)} items starting from {start_position}.")
+            frappe.logger().info(f"[QB SYNC] Fetched {len(items)} items starting from {start_position}.")
 
-#             if len(items) < max_results:
-#                 break  # Last page reached
+            if len(items) < max_results:
+                break  # Last page reached
 
-#             start_position += max_results
+            start_position += max_results
 
-#         except Exception as e:
-#             frappe.log_error(message=str(e), title="QuickBooks Item Sync Failed")
-#             break
+        except Exception as e:
+            frappe.log_error(message=str(e), title="QuickBooks Item Sync Failed")
+            break
 
 # def create_or_update_item(qb_item):
 
@@ -645,6 +645,7 @@ def start_item_background():
 #     item.save(ignore_permissions=True)
 
 #     frappe.db.commit()
+
 
 @frappe.whitelist()
 def create_or_update_item(qb_item):
