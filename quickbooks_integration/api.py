@@ -127,6 +127,10 @@ def refresh_quickbooks_access_token():
 
 @frappe.whitelist(allow_guest=True)
 def enqueue_sync_invoice_cancellation_to_quickbooks(doc, method):
+    settings = frappe.get_doc("QuickBooks Settings")
+    if not settings.enable:
+        frappe.msgprint('Please Enable Quickbook Settings')
+        return
     """Enqueue the sync invoice cancellation job to QuickBooks"""
     frappe.msgprint("Invoice synchronization with QuickBooks has started.", indicator="green")
     # Pass only doc.name (which is the doc_name) when enqueuing
@@ -382,11 +386,18 @@ def sync_selected_sales_invoices(selected_si):
 
 @frappe.whitelist(allow_guest=True)
 def sync_single_sales_invoice(docname):
+
+
     """Sync a single Sales Invoice to QuickBooks"""
     doc = frappe.get_doc("Sales Invoice", docname)
     refresh_quickbooks_access_token()
 
     settings = frappe.get_doc("QuickBooks Settings")
+
+    if not settings.enable:
+        frappe.frappe.msgprint('Please Enable Quickbook Settings')
+        return
+
     url = f"{settings.base_url.strip().rstrip('/')}/v3/company/{settings.quickbooks_company_id}/invoice?minorversion={settings.minor_version or '75'}"
     headers = {
         "Authorization": f"Bearer {settings.access_token}",
@@ -457,12 +468,6 @@ def sync_single_sales_invoice(docname):
         create_quickbooks_sync_record(doc, status="Failure", synced=0)
 
     frappe.db.commit()
-
-
-
-
-
-
 
 def create_quickbooks_sync_record(doc, status, synced):
     try:
@@ -563,6 +568,12 @@ def get_tax_code_for_item(item_name):
 
 @frappe.whitelist(allow_guest=True)
 def sync_credit_memo_to_quickbooks(docname):
+
+    settings = frappe.get_doc("QuickBooks Settings")
+
+    if not settings.enable:
+        frappe.frappe.msgprint('Please Enable Quickbook Settings')
+        return
     try:
         invoice = frappe.get_doc("Sales Invoice", docname)
         sync_credit_memo(invoice)

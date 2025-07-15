@@ -19,7 +19,7 @@ def start_customer_sync():
     refresh_quickbooks_access_token()
 
     settings = frappe.get_doc("QuickBooks Settings")
-    if settings.allow_customer_sync_prosessed != 1:
+    if settings.allow_customer_sync_prosessed != 1 or not settings.enable:
         frappe.frappe.msgprint('Navigate to Quickbooks Settings & Please enable this option to continue', title="Disabled",
                                 indicator="red",
                             )
@@ -337,8 +337,10 @@ def sync_invoice_to_quickbooks(docname):
 def start_customer_background():
     refresh_quickbooks_access_token()
 
+
+
     settings = frappe.get_doc("QuickBooks Settings")
-    if settings.allow_customer_sync_from_quickbooks != 1:
+    if settings.allow_customer_sync_from_quickbooks != 1 or not settings.enable:
         frappe.frappe.msgprint('Navigate to Quickbooks Settings & Please enable this option to continue', title="Disabled",
                                 indicator="red",
                             )
@@ -603,35 +605,44 @@ def item_sync():
             frappe.log_error(message=str(e), title="QuickBooks Item Sync Failed")
             break
 
-# def create_or_update_item(qb_item):
 
+# @frappe.whitelist()
+# def create_or_update_item(qb_item):
 #     """Create or update item in ERPNext based on QuickBooks item data."""
 
 #     qb_id = qb_item.get("Id")
-#     name = qb_item.get("FullyQualifiedName") or "Unnamed Item"
+#     # name = qb_item.get("FullyQualifiedName") or "Unnamed Item"
 #     item_type = qb_item.get("Type", "Inventory")
 
+#     # Check if the item already exists in ERPNext
 #     existing = frappe.db.exists("Item", {"custom_quickbooks_item_id": qb_id})
 #     if existing:
 #         item = frappe.get_doc("Item", existing)
 #     else:
 #         item = frappe.new_doc("Item")
 
-
+#     # Check if SalesTaxCodeRef exists and add tax template
 #     if qb_item.get("SalesTaxCodeRef") is not None:
 #         tax_code = qb_item["SalesTaxCodeRef"].get("value")
 #         if tax_code:
+#             # Fetch the tax template based on QuickBooks GST Code
 #             tax_template = frappe.get_all("Item Tax Template", filters={"custom_quickbooks_gst_id": tax_code}, limit=1)
-#             if tax_template:
 
-#                 item.append("taxes",{
-#                     "item_tax_template": tax_template[0].name,
-#                 });
+#             if tax_template:
+#                 # Check if the tax template is already attached to the item
+#                 existing_tax = frappe.get_all("Item Tax Template", filters={"custom_quickbooks_gst_id": tax_code}, limit=1)
+
+#                 if not existing_tax:  # Only add if the tax template is not already linked
+#                     item.append("taxes", {
+#                         "item_tax_template": tax_template[0].name,
+#                     })
+#                 else:
+#                     frappe.logger().info(f"[Item Sync] Tax Template {tax_template[0].name} already exists for Item {item.name}, skipping duplicate.")
 #             else:
 #                 frappe.logger().warn(f"[Item Sync] No Item Tax Template found for QuickBooks GST Code: {tax_code}")
 
-#     item.item_name = name
-#     # item.item_code = qb_item.get("Name")
+#     # Set other item properties
+#     item.item_name = qb_item.get("Description", "")
 #     item.item_group = "All Item Groups"
 #     item.custom_quickbooks_item_id = qb_id
 #     item.item_type = item_type
@@ -642,8 +653,8 @@ def item_sync():
 #     if "UnitPrice" in qb_item:
 #         item.standard_rate = float(qb_item["UnitPrice"])
 
+#     # Save item and commit
 #     item.save(ignore_permissions=True)
-
 #     frappe.db.commit()
 
 
@@ -652,7 +663,7 @@ def create_or_update_item(qb_item):
     """Create or update item in ERPNext based on QuickBooks item data."""
 
     qb_id = qb_item.get("Id")
-    name = qb_item.get("FullyQualifiedName") or "Unnamed Item"
+    item_name = qb_item.get("Description", "Unnamed Item")
     item_type = qb_item.get("Type", "Inventory")
 
     # Check if the item already exists in ERPNext
@@ -678,12 +689,12 @@ def create_or_update_item(qb_item):
                         "item_tax_template": tax_template[0].name,
                     })
                 else:
-                    frappe.logger().info(f"[Item Sync] Tax Template {tax_template[0].name} already exists for Item {item.name}, skipping duplicate.")
+                    frappe.logger().info(f"[Item Sync] Tax Template {tax_template[0].name} already exists for Item {item_name}, skipping duplicate.")
             else:
                 frappe.logger().warn(f"[Item Sync] No Item Tax Template found for QuickBooks GST Code: {tax_code}")
 
     # Set other item properties
-    item.item_name = name
+    item.item_name = qb_item.get("Description", "")
     item.item_group = "All Item Groups"
     item.custom_quickbooks_item_id = qb_id
     item.item_type = item_type
@@ -694,9 +705,15 @@ def create_or_update_item(qb_item):
     if "UnitPrice" in qb_item:
         item.standard_rate = float(qb_item["UnitPrice"])
 
-    # Save item and commit
-    item.save(ignore_permissions=True)
-    frappe.db.commit()
+    try:
+        # Save item and commit
+        item.save(ignore_permissions=True)
+        frappe.db.commit()
+        frappe.logger().info(f"[Item Sync] Item '{item_name}' (QB ID: {qb_id}) synced successfully.")
+    except Exception as e:
+        # Log error if saving the item fails, include item name in the log
+        error_message = f"Failed to sync item '{item_name}' (QB ID: {qb_id}) due to error: {str(e)}"
+        frappe.log_error(message=error_message, title=f"Failed to sync item {qb_id}")
 
 @frappe.whitelist()
 def sync_supplier_background():
