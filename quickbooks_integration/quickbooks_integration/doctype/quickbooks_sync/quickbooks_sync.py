@@ -427,10 +427,15 @@ def create_or_update_customer(qb_customer):
     if payment_term_name:
         payment_term = frappe.db.exists("Payment Term", {"payment_term_name": payment_term_name})
 
+
+
         if not payment_term:
             payment_term = frappe.new_doc("Payment Term")
             payment_term.payment_term_name = payment_term_name
-            payment_term.invoice_portion = 100
+            installment = payment_term.append("installments", {
+            "due_date": frappe.utils.nowdate(),  # Date of the first installment (e.g., today)
+            "invoice_portion": 100  # Single portion of 100%
+             })
             payment_term.save(ignore_permissions=True)
 
         payment_term_template = frappe.db.exists("Payment Terms Template", {"template_name": payment_term_name})
