@@ -422,6 +422,25 @@ def create_or_update_customer(qb_customer):
     customer.custom_quickbooks_customer_id = qb_id
     customer.customer_group = "All Customer Groups"
     customer.territory = "All Territories"
+    payment_term_name = qb_customer.get("SalesTermRef", {}).get("name")
+
+    if payment_term_name:
+        payment_term = frappe.db.exists("Payment Term", {"payment_term_name": payment_term_name})
+
+        if not payment_term:
+            payment_term = frappe.new_doc("Payment Term")
+            payment_term.payment_term_name = payment_term_name
+            payment_term.invoice_portion = 100
+            payment_term.save(ignore_permissions=True)
+
+        payment_term_template = frappe.db.exists("Payment Term Template", {"payment_term": payment_term_name})
+
+        if not payment_term_template:
+            payment_term_template = frappe.new_doc("Payment Term Template")
+            payment_term_template.payment_term = payment_term_name
+            payment_term_template.save(ignore_permissions=True)
+
+        customer.payment_terms = payment_term_template.name
 
     customer.save(ignore_permissions=True)
 
