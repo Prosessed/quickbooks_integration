@@ -429,11 +429,11 @@ def create_or_update_customer(qb_customer):
 
         if not payment_term:
             payment_term = frappe.new_doc("Payment Term")
-            payment_term.template_name = payment_term_name
+            payment_term.payment_term_name = payment_term_name
             payment_term.invoice_portion = 100
             payment_term.save(ignore_permissions=True)
 
-        payment_term_template = frappe.db.exists("Payment Terms Template", {"payment_term": payment_term_name})
+        payment_term_template = frappe.db.exists("Payment Terms Template", {"template_name": payment_term_name})
 
         if not payment_term_template:
             payment_term_template = frappe.new_doc("Payment Terms Template")
