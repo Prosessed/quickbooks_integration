@@ -671,7 +671,7 @@ def create_or_update_item(qb_item):
 
             if tax_template:
                 # Check if the tax template is already attached to the item
-                existing_tax = frappe.get_all("Item Tax", filters={"item": item.name, "item_tax_template": tax_template[0].name})
+                existing_tax = frappe.get_all("Item Tax Template", filters={"custom_quickbooks_gst_id": tax_code}, limit=1)
 
                 if not existing_tax:  # Only add if the tax template is not already linked
                     item.append("taxes", {
