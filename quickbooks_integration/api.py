@@ -507,13 +507,12 @@ def create_item_on_quickbooks(item_name):
         "Accept": "application/json"
     }
 
-    # Get the QuickBooks SalesTaxCodeRef based on the Item's Tax Template
     gst_code = get_tax_code_for_item(item_name)
 
     payload = {
         "Name": item_doc.item_name,
         "Taxable": True,
-        "Type": "Service",  # Adjust based on your item type
+        "Type": "Service",
         "IncomeAccountRef": {"name": "Sales of Product Income", "value": "79"}
     }
 

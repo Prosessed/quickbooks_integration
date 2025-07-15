@@ -26,7 +26,7 @@ app_license = "mit"
 
 # include js, css files in header of desk.html
 # app_include_css = "/assets/quickbooks_integration/css/quickbooks_integration.css"
-# app_include_js = "/assets/quickbooks_integration/js/quickbooks_integration.js"
+app_include_js = "/assets/quickbooks_integration/js/sales_invoice.js"
 
 # include js, css files in header of web template
 # web_include_css = "/assets/quickbooks_integration/css/quickbooks_integration.css"

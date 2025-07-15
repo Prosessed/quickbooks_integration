@@ -558,80 +558,131 @@ def start_item_background():
     frappe.enqueue(item_sync, queue='long', timeout=300)
     frappe.msgprint("Item sync from QuickBooks has been started in the background.")
 
+# @frappe.whitelist()
+# def item_sync():
+#     """Sync items from QuickBooks to ERPNext with pagination support."""
+#     settings = frappe.get_doc("QuickBooks Settings")
+#     access_token = settings.access_token
+#     company_id = settings.quickbooks_company_id
+#     base_url = settings.base_url.strip().rstrip("/")
+#     minor_version = settings.minor_version or "75"
+
+#     start_position = 1
+#     max_results = 100  # QuickBooks allows max 100 per page
+
+#     while True:
+#         query = f"SELECT * FROM Item STARTPOSITION {start_position} MAXRESULTS {max_results}"
+#         url = f"{base_url}/v3/company/{company_id}/query?query={query.replace(' ', '%20')}&minorversion={minor_version}"
+
+#         headers = {
+#             "Authorization": f"Bearer {access_token}",
+#             "Content-Type": "application/json",
+#             "Accept": "application/json"
+#         }
+
+#         try:
+#             response = requests.get(url, headers=headers)
+#             response.raise_for_status()
+#             data = response.json()
+
+#             items = data.get("QueryResponse", {}).get("Item", [])
+#             if not items:
+#                 break  # No more items to fetch
+
+#             for qb_item in items:
+#                 create_or_update_item(qb_item)
+
+#             frappe.logger().info(f"[QB SYNC] Fetched {len(items)} items starting from {start_position}.")
+
+#             if len(items) < max_results:
+#                 break  # Last page reached
+
+#             start_position += max_results
+
+#         except Exception as e:
+#             frappe.log_error(message=str(e), title="QuickBooks Item Sync Failed")
+#             break
+
+# def create_or_update_item(qb_item):
+
+#     """Create or update item in ERPNext based on QuickBooks item data."""
+
+#     qb_id = qb_item.get("Id")
+#     name = qb_item.get("FullyQualifiedName") or "Unnamed Item"
+#     item_type = qb_item.get("Type", "Inventory")
+
+#     existing = frappe.db.exists("Item", {"custom_quickbooks_item_id": qb_id})
+#     if existing:
+#         item = frappe.get_doc("Item", existing)
+#     else:
+#         item = frappe.new_doc("Item")
+
+
+#     if qb_item.get("SalesTaxCodeRef") is not None:
+#         tax_code = qb_item["SalesTaxCodeRef"].get("value")
+#         if tax_code:
+#             tax_template = frappe.get_all("Item Tax Template", filters={"custom_quickbooks_gst_id": tax_code}, limit=1)
+#             if tax_template:
+
+#                 item.append("taxes",{
+#                     "item_tax_template": tax_template[0].name,
+#                 });
+#             else:
+#                 frappe.logger().warn(f"[Item Sync] No Item Tax Template found for QuickBooks GST Code: {tax_code}")
+
+#     item.item_name = name
+#     # item.item_code = qb_item.get("Name")
+#     item.item_group = "All Item Groups"
+#     item.custom_quickbooks_item_id = qb_id
+#     item.item_type = item_type
+#     item.description = qb_item.get("Description", "")
+#     item.stock_uom = "Unit"
+#     item.default_unit_of_measure = "Unit"
+
+#     if "UnitPrice" in qb_item:
+#         item.standard_rate = float(qb_item["UnitPrice"])
+
+#     item.save(ignore_permissions=True)
+
+#     frappe.db.commit()
+
 @frappe.whitelist()
-def item_sync():
-    """Sync items from QuickBooks to ERPNext with pagination support."""
-    settings = frappe.get_doc("QuickBooks Settings")
-    access_token = settings.access_token
-    company_id = settings.quickbooks_company_id
-    base_url = settings.base_url.strip().rstrip("/")
-    minor_version = settings.minor_version or "75"
-
-    start_position = 1
-    max_results = 100  # QuickBooks allows max 100 per page
-
-    while True:
-        query = f"SELECT * FROM Item STARTPOSITION {start_position} MAXRESULTS {max_results}"
-        url = f"{base_url}/v3/company/{company_id}/query?query={query.replace(' ', '%20')}&minorversion={minor_version}"
-
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
-
-        try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-
-            items = data.get("QueryResponse", {}).get("Item", [])
-            if not items:
-                break  # No more items to fetch
-
-            for qb_item in items:
-                create_or_update_item(qb_item)
-
-            frappe.logger().info(f"[QB SYNC] Fetched {len(items)} items starting from {start_position}.")
-
-            if len(items) < max_results:
-                break  # Last page reached
-
-            start_position += max_results
-
-        except Exception as e:
-            frappe.log_error(message=str(e), title="QuickBooks Item Sync Failed")
-            break
-
 def create_or_update_item(qb_item):
-
     """Create or update item in ERPNext based on QuickBooks item data."""
 
     qb_id = qb_item.get("Id")
     name = qb_item.get("FullyQualifiedName") or "Unnamed Item"
     item_type = qb_item.get("Type", "Inventory")
 
+    # Check if the item already exists in ERPNext
     existing = frappe.db.exists("Item", {"custom_quickbooks_item_id": qb_id})
     if existing:
         item = frappe.get_doc("Item", existing)
     else:
         item = frappe.new_doc("Item")
 
-
+    # Check if SalesTaxCodeRef exists and add tax template
     if qb_item.get("SalesTaxCodeRef") is not None:
         tax_code = qb_item["SalesTaxCodeRef"].get("value")
         if tax_code:
+            # Fetch the tax template based on QuickBooks GST Code
             tax_template = frappe.get_all("Item Tax Template", filters={"custom_quickbooks_gst_id": tax_code}, limit=1)
-            if tax_template:
 
-                item.append("taxes",{
-                    "item_tax_template": tax_template[0].name,
-                });
+            if tax_template:
+                # Check if the tax template is already attached to the item
+                existing_tax = frappe.get_all("Item Tax", filters={"item": item.name, "item_tax_template": tax_template[0].name})
+
+                if not existing_tax:  # Only add if the tax template is not already linked
+                    item.append("taxes", {
+                        "item_tax_template": tax_template[0].name,
+                    })
+                else:
+                    frappe.logger().info(f"[Item Sync] Tax Template {tax_template[0].name} already exists for Item {item.name}, skipping duplicate.")
             else:
                 frappe.logger().warn(f"[Item Sync] No Item Tax Template found for QuickBooks GST Code: {tax_code}")
 
+    # Set other item properties
     item.item_name = name
-    # item.item_code = qb_item.get("Name")
     item.item_group = "All Item Groups"
     item.custom_quickbooks_item_id = qb_id
     item.item_type = item_type
@@ -642,8 +693,8 @@ def create_or_update_item(qb_item):
     if "UnitPrice" in qb_item:
         item.standard_rate = float(qb_item["UnitPrice"])
 
+    # Save item and commit
     item.save(ignore_permissions=True)
-
     frappe.db.commit()
 
 @frappe.whitelist()
