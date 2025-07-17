@@ -250,6 +250,14 @@ def handle_invoice_save(doc, method):
 
 @frappe.whitelist(allow_guest=True)
 def enqueue_sync_invoice_to_quickbooks(doc, method):
+
+    settings = frappe.get_doc("QuickBooks Settings")
+
+    if not settings.enable:
+        frappe.frappe.msgprint('Please Enable Quickbooks Integration')
+        return
+
+
     """Enqueue the sync invoice job to QuickBooks"""
     frappe.msgprint("Invoice synchronization with QuickBooks has started.", indicator="green")
     frappe.enqueue(sync_invoice_to_quickbooks, queue='long', docname=doc.name)
@@ -511,7 +519,7 @@ def map_customer_address(customer_name, qb_customer):
 
 def map_customer_contact(customer_name, qb_customer):
     """Create or update contact person linked to customer with proper customer linking."""
-    phone = qb_customer.get("PrimaryPhone", {}).get("FreeFormNumber", "") or "1234567890"
+    phone = qb_customer.get("PrimaryPhone", {}).get("FreeFormNumber", "") or ""
     email = qb_customer.get("PrimaryEmailAddr", {}).get("Address", "")
     first_name = customer_name
 
@@ -521,7 +529,6 @@ def map_customer_contact(customer_name, qb_customer):
     else:
         contact = frappe.new_doc("Contact")
 
-    # add contact details email in email_no child table
 
     contact.first_name = first_name
     if email:
@@ -553,7 +560,7 @@ def start_item_background():
     """Enqueue item sync job to run in background."""
 
     settings = frappe.get_doc("QuickBooks Settings")
-    if settings.allow_item_sync_from_quickbooks != 1:
+    if settings.allow_item_sync_from_quickbooks != 1 and not settings.enable:
         frappe.frappe.msgprint('Navigate to Quickbooks Settings & Please enable Item sync to continue', title="QuickBooks Item Sync Disabled",
                                 indicator="red",
                             )
@@ -784,7 +791,7 @@ def sync_supplier_background():
     refresh_quickbooks_access_token()
 
     settings = frappe.get_doc("QuickBooks Settings")
-    if settings.allow_supplier_sync_from_quickbooks != 1:
+    if settings.allow_supplier_sync_from_quickbooks != 1 and not settings.enable:
         frappe.msgprint(
             'Navigate to Quickbooks Settings & Please enable Supplier sync to continue',
             title="QuickBooks Supplier Sync Disabled",
@@ -872,6 +879,12 @@ def create_or_update_supplier(qb_supplier):
     supplier.save(ignore_permissions=True)
 
 def sync_purchase_invoice_to_quickbooks(doc, method):
+
+    settings = frappe.get_doc("QuickBooks Settings")
+
+    if not settings.enable:
+        frappe.frappe.msgprint('Please Enable Quickbooks Integration')
+        return
     refresh_quickbooks_access_token()
 
     """Hook function to sync Purchase Invoice to QuickBooks on submit."""
@@ -948,7 +961,7 @@ def sync_items_to_quickbooks_background():
     """Enqueue item sync job to run in background."""
 
     settings = frappe.get_doc("QuickBooks Settings")
-    if settings.allow_item_sync_to_quickbooks != 1:
+    if settings.allow_item_sync_to_quickbooks != 1 and not settings.enable:
         frappe.msgprint('Navigate to Quickbooks Settings & Please enable Item sync to continue', title="QuickBooks Item Sync Disabled",
                         indicator="red")
         return
