@@ -497,12 +497,12 @@ def sync_single_sales_invoice(docname):
 def create_quickbooks_sync_record(doc, status, synced):
     try:
         # Log the attempt to create the sync record
-        frappe.log_error(f"Attempting to create QuickBooks Sync record for Sales Invoice: {doc.name}. Status: {status}, Synced: {synced}", "QuickBooks Sync Log")
+        # frappe.log_error(f"Attempting to create QuickBooks Sync record for Sales Invoice: {doc.name}. Status: {status}, Synced: {synced}", "QuickBooks Sync Log")
 
         qb_sync_meta = frappe.get_doc("QuickBooks Sync")
         if qb_sync_meta:
             # Log if QuickBooks Sync DocType is found
-            frappe.log_error("Found QuickBooks Sync DocType.", "QuickBooks Sync Log")
+            # frappe.log_error("Found QuickBooks Sync DocType.", "QuickBooks Sync Log")
 
             quickbooks_sync = frappe.get_all(
                 "QuickBooks Sync",
@@ -528,22 +528,24 @@ def create_quickbooks_sync_record(doc, status, synced):
 
 
             # Log before inserting the record
-            frappe.log_error(f"Inserting QuickBooks Sync record for {doc.name}.", "QuickBooks Sync Log")
+            # frappe.log_error(f"Inserting QuickBooks Sync record for {doc.name}.", "QuickBooks Sync Log")
             quickbooks_sync.insert(ignore_permissions=True)
             frappe.db.commit()
             qb_sync_meta.reload()
 
 
             # Log after the record is inserted
-            frappe.log_error(f"QuickBooks Sync for {doc.name} inserted with status {status}.", "QuickBooks Sync Log")
+            # frappe.log_error(f"QuickBooks Sync for {doc.name} inserted with status {status}.", "QuickBooks Sync Log")
 
         else:
             # If the QuickBooks Sync DocType doesn't exist
             frappe.log_error("QuickBooks Sync DocType not found.", "QuickBooks Sync Log")
 
     except Exception as e:
+
+        print(f"Error inserting QuickBooks Sync for {doc.name}: {str(e)}")
         # Log the error in case of an exception
-        frappe.log_error(f"Error inserting QuickBooks Sync for {doc.name}. Error: {str(e)}", "QuickBooks Sync Error Log")
+        # frappe.log_error(f"Error inserting QuickBooks Sync for {doc.name}. Error: {str(e)}", "QuickBooks Sync Error Log")
 
 def create_item_on_quickbooks(item_name):
     refresh_quickbooks_access_token()
