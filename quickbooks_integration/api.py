@@ -4,6 +4,8 @@ import requests
 from frappe import _
 from frappe.utils import now_datetime
 from datetime import timedelta
+from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
+from frappe.utils import nowdate
 
 @frappe.whitelist(allow_guest=True)
 def oauth_callback():
@@ -469,7 +471,7 @@ def sync_single_sales_invoice(docname):
 
     frappe.db.commit()
 
-def create_quickbooks_sync_record(doc, status, synced):
+# def create_quickbooks_sync_record(doc, status, synced):
     try:
         qb_sync_meta = frappe.get_doc("QuickBooks Sync")
         if qb_sync_meta:
@@ -490,6 +492,58 @@ def create_quickbooks_sync_record(doc, status, synced):
             frappe.throw("QuickBooks Sync DocType not found.")
     except Exception as e:
         frappe.log_error(f"Error inserting QuickBooks Sync for {doc.name}", str(e))
+
+
+def create_quickbooks_sync_record(doc, status, synced):
+    try:
+        # Log the attempt to create the sync record
+        frappe.log_error(f"Attempting to create QuickBooks Sync record for Sales Invoice: {doc.name}. Status: {status}, Synced: {synced}", "QuickBooks Sync Log")
+
+        qb_sync_meta = frappe.get_doc("QuickBooks Sync")
+        if qb_sync_meta:
+            # Log if QuickBooks Sync DocType is found
+            frappe.log_error("Found QuickBooks Sync DocType.", "QuickBooks Sync Log")
+
+            quickbooks_sync = frappe.get_all(
+                "QuickBooks Sync",
+                filters={"parent": doc.name, "parenttype": "Sales Invoice"},
+                limit_page_length=1
+            )
+
+            if quickbooks_sync:
+                quickbooks_sync = frappe.get_doc("QuickBooks Sync", quickbooks_sync[0].name)
+            else:
+                # Create a new "QuickBooks Sync" document if it doesn't exist
+                quickbooks_sync = frappe.get_doc({
+                    "doctype": "QuickBooks Sync",
+                    "parent": doc.name,
+                    "parenttype": "Sales Invoice",
+                    "sales_invoice_list": [{
+                        "invoice_name": doc.name,
+                        "status": status,
+                        "is_synced": synced,
+                    }]
+                })
+                quickbooks_sync.insert()  # Insert the new record into the database
+
+
+            # Log before inserting the record
+            frappe.log_error(f"Inserting QuickBooks Sync record for {doc.name}.", "QuickBooks Sync Log")
+            quickbooks_sync.insert(ignore_permissions=True)
+            frappe.db.commit()
+            qb_sync_meta.reload()
+
+
+            # Log after the record is inserted
+            frappe.log_error(f"QuickBooks Sync for {doc.name} inserted with status {status}.", "QuickBooks Sync Log")
+
+        else:
+            # If the QuickBooks Sync DocType doesn't exist
+            frappe.log_error("QuickBooks Sync DocType not found.", "QuickBooks Sync Log")
+
+    except Exception as e:
+        # Log the error in case of an exception
+        frappe.log_error(f"Error inserting QuickBooks Sync for {doc.name}. Error: {str(e)}", "QuickBooks Sync Error Log")
 
 def create_item_on_quickbooks(item_name):
     refresh_quickbooks_access_token()
@@ -651,3 +705,90 @@ def sync_credit_memo(invoice):
     except requests.exceptions.RequestException as e:
         error_message = f"Error syncing Credit Memo {invoice.name}: {str(e)} - Response Body: {res.text if res else 'No response from server'}"
         frappe.throw(f"Error syncing Credit Memo {invoice.name}: {str(e)}")
+
+
+
+
+def fetch_quickbooks_payment(payment_id):
+
+    refresh_quickbooks_access_token()
+    qb_settings = frappe.get_single("QuickBooks Settings")
+    headers = {
+        "Authorization": f"Bearer {qb_settings.access_token}",
+        "Accept": "application/json"
+    }
+
+    url = f"{qb_settings.base_url}/v3/company/{qb_settings.quickbooks_company_id}/payment/{payment_id}?minorversion=70"
+    response = requests.get(url, headers=headers)
+
+    if response.status_code == 200:
+        return response.json().get('Payment')
+
+    frappe.log_error("QuickBooks API Fetch Failed", response.text)
+    return None
+
+def create_payment_entry(payment):
+    customer_ref = payment.get('CustomerRef', {}).get('value')
+    txn_date = payment.get('TxnDate')
+    total_amount = payment.get('TotalAmt')
+    payment_id = payment.get('Id')
+
+    if not customer_ref:
+        frappe.log_error("Customer reference missing from QuickBooks payment", payment)
+        return
+
+    customer = frappe.db.get_value("Customer", {"custom_quickbooks_customer_id": customer_ref}, "name")
+
+    if not customer:
+        frappe.log_error(f"No ERPNext Customer found for QuickBooks customer ref {customer_ref}", payment)
+        return
+
+    for line in payment.get('Line', []):
+        for txn in line.get('LinkedTxn', []):
+            if txn.get('TxnType') == 'Invoice':
+                invoice_id = txn.get('TxnId')
+                erpnext_invoice = frappe.db.get_value("Sales Invoice", {"custom_quickbooks_invoice_id": invoice_id}, "name")
+
+                if not erpnext_invoice:
+                    frappe.log_error(f"No matching Sales Invoice found for QuickBooks invoice {invoice_id}", payment)
+                    continue
+
+                if frappe.db.exists('Payment Entry', {'reference_no': payment_id}):
+                    frappe.log_error(f"Payment Entry already exists for QuickBooks payment {payment_id}", payment)
+                    continue
+
+                qbo_payment_method_id = payment.get('PaymentMethodRef', {}).get('value')
+
+
+                try:
+                    pe = get_payment_entry('Sales Invoice', erpnext_invoice)
+                    pe.payment_type = "Receive"
+                    pe.party_type = "Customer"
+                    pe.party = customer
+                    pe.posting_date =  nowdate()
+                    pe.reference_no = payment_id
+                    pe.reference_date =  nowdate()
+                    pe.paid_amount = total_amount
+                    pe.received_amount = total_amount
+                    pe.mode_of_payment = frappe.db.get_value("Payment Method", {"custom_quickbooks_payment_method_id": qbo_payment_method_id}, "name") or "Cash"
+                    pe.remarks = "Created via QuickBooks Webhook"
+
+                    allocated_amount = min(pe.references[0].outstanding_amount, total_amount)
+                    pe.references[0].allocated_amount = allocated_amount
+                    if total_amount > allocated_amount:
+                        pe.unallocated_amount = total_amount - allocated_amount
+
+                    pe.insert(ignore_permissions=True)
+                    pe.submit()
+
+                    frappe.log_error(
+                        title=f"ERPNext Payment Entry Created: {pe.name}",
+                        message=json.dumps(payment, indent=2)
+                    )
+
+                except Exception as e:
+                    frappe.db.rollback()
+                    frappe.log_error(
+                        title="Error creating Payment Entry from QuickBooks",
+                        message=str(e) + "\n" + json.dumps(payment, indent=2)
+                    )

@@ -27,6 +27,8 @@
   "column_break_stsn",
   "access_token",
   "refresh_token",
+  "webhook_secret_section",
+  "webhook_secret",
   "master_data_setting_tab",
   "customer_section",
   "allow_customer_sync_from_quickbooks",
@@ -233,13 +235,23 @@
    "fieldname": "allow_item_sync_to_quickbooks",
    "fieldtype": "Check",
    "label": "Allow Item Sync to Quickbooks"
+  },
+  {
+   "fieldname": "webhook_secret_section",
+   "fieldtype": "Section Break",
+   "label": "Webhook Secret"
+  },
+  {
+   "fieldname": "webhook_secret",
+   "fieldtype": "Password",
+   "label": "Webhook Secret"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-07-02 10:49:02.824701",
+ "modified": "2025-07-22 21:24:41.841452",
  "modified_by": "Administrator",
  "module": "Quickbooks Integration",
  "name": "QuickBooks Settings",
