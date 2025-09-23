@@ -19,6 +19,7 @@
   "invoice_list_tab",
   "sync_sales_invoices_section",
   "sync_sales_invoices",
+  "refresh_sales_invoices",
   "column_break_cxpu",
   "count",
   "sales_invoice_list_section",
@@ -117,13 +118,18 @@
    "fieldname": "sync_items_to_quickbooks",
    "fieldtype": "Button",
    "label": "Sync Items to Quickbooks"
+  },
+  {
+   "fieldname": "refresh_sales_invoices",
+   "fieldtype": "Button",
+   "label": "Refresh Sales Invoices"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-07-02 10:29:03.520356",
+ "modified": "2025-09-23 14:02:44.864461",
  "modified_by": "Administrator",
  "module": "Quickbooks Integration",
  "name": "QuickBooks Sync",

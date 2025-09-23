@@ -7,10 +7,11 @@ from frappe.model.document import Document
 import requests
 import frappe
 from frappe.utils import nowdate
-from quickbooks_integration.api import create_quickbooks_sync_record, refresh_quickbooks_access_token, sync_credit_memo_to_quickbooks
+from quickbooks_integration.api import refresh_quickbooks_access_token, sync_credit_memo_to_quickbooks, sync_selected_sales_invoices
 
 class QuickBooksSync(Document):
 	pass
+
 
 
 @frappe.whitelist()
@@ -119,92 +120,6 @@ def sync_customers_to_quickbooks():
     frappe.db.commit()
 
 
-# @frappe.whitelist()
-# def sync_customers_to_quickbooks():
-#     """Sync unsynced ERPNext customers to QuickBooks, using settings-driven config."""
-
-#     settings = frappe.get_doc("QuickBooks Settings")
-
-#     minor_version = settings.minor_version or "75"
-#     realm_id = settings.quickbooks_company_id
-#     access_token = settings.access_token
-#     base_url = settings.base_url.strip()
-#     scope = settings.auth_scope or ""
-
-#     if not realm_id or not access_token:
-#         frappe.throw("Missing QuickBooks Company ID or access token.")
-
-#     if "com.intuit.quickbooks.accounting" not in scope.split():
-#         frappe.throw("Access token does not include required 'com.intuit.quickbooks.accounting' scope.")
-
-#     if not base_url.startswith("http"):
-#         base_url = "https://" + base_url
-
-#     endpoint = f"{base_url}/v3/company/{realm_id}/customer?minorversion={minor_version}"
-
-#     unsynced_customers = frappe.get_all("Customer",
-#         filters={"custom_is_customer_synced": 0},
-#         fields=["name", "customer_name", "email_id", "mobile_no", "customer_primary_address"]
-#     )
-
-#     if not unsynced_customers:
-#         frappe.logger().info("[QuickBooks Sync] No unsynced customers found.")
-#         return
-
-#     for cust in unsynced_customers:
-#         try:
-#             email = cust["email_id"] or get_primary_contact_email(cust["name"])
-#             address = None
-
-#             if cust["customer_primary_address"]:
-#                 address = frappe.get_doc("Address", cust["customer_primary_address"])
-#             else:
-#                 address = get_billing_address_for_customer(cust["name"])
-
-#             payload = {
-#                 "DisplayName": cust["customer_name"],
-#                 "PrimaryEmailAddr": {"Address": email} if email else None,
-#                 "PrimaryPhone": {"FreeFormNumber": cust["mobile_no"]} if cust.get("mobile_no") else None,
-#                 "BillAddr": {
-#                     "Line1": address.address_line1 if address else "",
-#                     "City": address.city if address else "",
-#                     "CountrySubDivisionCode": address.state if address else "",
-#                     "PostalCode": address.pincode if address else "",
-#                     "Country": address.country if address else ""
-#                 } if address else None,
-#                 "Notes": f"Imported from ERPNext Customer: {cust['name']}"
-#             }
-
-#             # Remove None entries
-#             payload = {k: v for k, v in payload.items() if v}
-
-#             res = requests.post(
-#                 endpoint,
-#                 headers={
-#                     "Authorization": f"Bearer {access_token}",
-#                     "Accept": "application/json",
-#                     "Content-Type": "application/json"
-#                 },
-#                 json=payload
-#             )
-
-#             if res.ok:
-#                 frappe.db.set_value("Customer", cust["name"], "custom_is_customer_synced", 1)
-#                 frappe.logger().info(f"[QuickBooks Sync] Synced customer: {cust['customer_name']}")
-#             else:
-#                 error_msg = f"[QuickBooks Sync] Failed for {cust['customer_name']} - Status Code: {res.status_code}\nResponse: {res.text[:1000]}"
-#                 if res.status_code == 403 and "003100" in res.text:
-#                     error_msg += "\nReason: ApplicationAuthorizationFailed (Error 003100)"
-
-#                 frappe.log_error(
-#                     title=f"[QuickBooks Sync] Error syncing {cust['customer_name']}",
-#                     message=error_msg
-#                 )
-
-#         except Exception as e:
-#             frappe.log_error(f"[QuickBooks Sync] Exception for {cust['name']}", str(e))
-
-#     frappe.db.commit()
 
 def get_primary_contact_email(customer_name):
     contact_link = frappe.db.get_value("Dynamic Link", {
@@ -329,14 +244,11 @@ def sync_invoice_to_quickbooks(docname):
         if res.status_code == 200 and (qbo_id := res.json().get("Invoice", {}).get("Id")):
             doc.db_set("custom_quickbooks_invoice_id", qbo_id)
             frappe.logger().info(f"[QBO] Sales Invoice {doc.name} synced as QBO Invoice {qbo_id}")
-            create_quickbooks_sync_record(doc, status="Confirmed", synced=1)
 
         else:
             frappe.log_error("QuickBooks Invoice Sync Failed", f"Sales Invoice: {doc.name}\nStatus: {res.status_code}\nResponse: {res.text}")
-            create_quickbooks_sync_record(doc, status="Failure", synced=0)
     except Exception as e:
         frappe.log_error("QuickBooks Invoice Sync Error", f"Sales Invoice: {doc.name}\nError: {str(e)}")
-        create_quickbooks_sync_record(doc, status="Failure", synced=0)
 
     frappe.db.commit()
 
@@ -663,7 +575,7 @@ def create_or_update_item(qb_item):
 
     # Assign item group only for new items
     if not existing:
-        item.item_group = "All Items Group"
+        item.item_group = "All Item Groups"
 
     try:
         # Save item and commit
@@ -869,5 +781,4 @@ def sync_items_to_quickbooks_background():
                        item_name=item.name)
 
     frappe.msgprint("Item sync to QuickBooks has been started in the background.")
-
 

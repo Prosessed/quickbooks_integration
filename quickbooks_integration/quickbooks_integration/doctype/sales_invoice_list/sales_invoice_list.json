@@ -8,7 +8,6 @@
  "field_order": [
   "invoice_name",
   "status",
-  "quickbooks_invoice_status",
   "is_synced"
  ],
  "fields": [
@@ -22,14 +21,8 @@
    "fieldname": "status",
    "fieldtype": "Data",
    "in_list_view": 1,
-   "label": "Status"
-  },
-  {
-   "depends_on": "is_synced",
-   "fieldname": "quickbooks_invoice_status",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "Quickbooks Invoice Status"
+   "label": "Status",
+   "options": "Success\nFailed"
   },
   {
    "default": "0",
@@ -43,7 +36,7 @@
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2025-07-01 18:52:06.740049",
+ "modified": "2025-09-23 15:08:39.916239",
  "modified_by": "Administrator",
  "module": "Quickbooks Integration",
  "name": "Sales Invoice List",
