@@ -7,8 +7,8 @@ from frappe.model.document import Document
 import requests
 import frappe
 from frappe.utils import nowdate
-from quickbooks_integration.api import refresh_quickbooks_access_token, sync_credit_memo_to_quickbooks, sync_selected_sales_invoices
-
+from quickbooks_integration.api import refresh_quickbooks_access_token, sync_credit_memo_to_quickbooks, sync_selected_sales_invoices,sync_single_purchase_invoice_to_quickbooks
+from frappe import _
 class QuickBooksSync(Document):
 	pass
 
@@ -153,13 +153,18 @@ def get_billing_address_for_customer(customer_name):
 @frappe.whitelist(allow_guest=True)
 def handle_invoice_save(doc, method):
     """Decide whether to sync Sales Invoice or Credit Note to QuickBooks"""
-    if doc.is_return:
 
+    frappe.log_error("Here docname is ", doc.name)
+
+    if doc.is_return:
+        start_customer_sync()
         enqueue_sync_credit_note_to_quickbooks(doc, method)
 
     else:
         # Otherwise, sync the regular sales invoice
+        start_customer_sync()
         enqueue_sync_invoice_to_quickbooks(doc ,method)
+
 
 
 
@@ -177,14 +182,15 @@ def enqueue_sync_invoice_to_quickbooks(doc, method):
     frappe.msgprint("Invoice synchronization with QuickBooks has started.", indicator="green")
     frappe.enqueue(sync_invoice_to_quickbooks, queue='long', docname=doc.name)
 
-
+@frappe.whitelist(allow_guest=True)
 def enqueue_sync_credit_note_to_quickbooks(doc, method):
     """Enqueue the sync invoice job to QuickBooks"""
+    frappe.log_error("Came here" , doc.name)
     frappe.msgprint("Credit Note synchronization with QuickBooks has started.", indicator="green")
     frappe.enqueue(sync_credit_memo_to_quickbooks, queue='long', docname=doc.name)
 
-
-def sync_invoice_to_quickbooks(docname):
+@frappe.whitelist()
+def sync_invoice_to_quickbooks(docname=None):
     doc = frappe.get_doc("Sales Invoice", docname)
     refresh_quickbooks_access_token()
 
@@ -229,6 +235,7 @@ def sync_invoice_to_quickbooks(docname):
         })
 
     payload = {
+        "TxnDate": str(doc.posting_date),
         "DocNumber": doc.name,
         "CustomerRef": {"value": qb_customer_id, "name": doc.customer},
         "Line": line_items,
@@ -251,6 +258,7 @@ def sync_invoice_to_quickbooks(docname):
         frappe.log_error("QuickBooks Invoice Sync Error", f"Sales Invoice: {doc.name}\nError: {str(e)}")
 
     frappe.db.commit()
+
 
 
 @frappe.whitelist()
@@ -461,9 +469,6 @@ def map_customer_contact(customer_name, qb_customer):
                 })
 
     contact.save(ignore_permissions=True)
-
-
-
 
 @frappe.whitelist()
 def start_item_background():
@@ -680,6 +685,92 @@ def create_or_update_supplier(qb_supplier):
 
     supplier.save(ignore_permissions=True)
 
+@frappe.whitelist()
+def sync_supplier_to_qbo_background():
+    """Trigger background supplier sync."""
+    refresh_quickbooks_access_token()
+
+    settings = frappe.get_doc("QuickBooks Settings")
+    if settings.allow_supplier_sync_to_quickbooks != 1 and not settings.enable:
+        frappe.msgprint(
+            'Navigate to Quickbooks Settings & Please enable Supplier sync to continue',
+            title="QuickBooks Supplier Sync Disabled",
+            indicator="red",
+        )
+        return
+
+    frappe.enqueue(sync_suppliers_to_quickbooks, queue='long', timeout=300)
+    frappe.msgprint("Supplier sync from QuickBooks has been started in the background.")
+
+
+@frappe.whitelist()
+def sync_suppliers_to_quickbooks():
+    """
+    Create vendors in QuickBooks for ERPNext Suppliers
+    that do not yet have a custom_quickbooks_supplier_id.
+    """
+    try:
+        settings = frappe.get_single("QuickBooks Settings")
+        if not (settings.enable and settings.allow_supplier_sync_to_quickbooks):
+            frappe.throw(_("Please enable Supplier sync in QuickBooks Settings"))
+
+        url = f"{settings.base_url.strip().rstrip('/')}/v3/company/{settings.quickbooks_company_id}/vendor?minorversion={settings.minor_version or '75'}"
+        headers = {
+            "Authorization": f"Bearer {settings.access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+        # ✅ Removed `phone` because Supplier doctype does not have it
+        suppliers = frappe.get_all(
+            "Supplier",
+            filters={"custom_quickbooks_supplier_id": ["is", "not set"]},
+            fields=["name", "supplier_name"]
+        )
+
+        if not suppliers:
+            return {"success": True, "message": _("All suppliers are already synced to QuickBooks.")}
+
+        synced, errors = [], []
+
+        for supplier in suppliers:
+            try:
+                # Build vendor payload dynamically
+                vendor_payload = {
+                    "DisplayName": supplier.supplier_name,
+                    "CompanyName": supplier.supplier_name,
+                    "PrintOnCheckName": supplier.supplier_name
+                }
+
+                res = requests.post(url, headers=headers, json=vendor_payload, timeout=30)
+                res.raise_for_status()
+                data = res.json()
+
+                if "Vendor" in data:
+                    qbo_id = data["Vendor"].get("Id")
+                    frappe.db.set_value("Supplier", supplier.name, "custom_quickbooks_supplier_id", qbo_id)
+                    synced.append({"supplier": supplier.name, "qbo_id": qbo_id})
+                else:
+                    errors.append({"supplier": supplier.name, "error": data})
+
+            except Exception as e:
+                errors.append({"supplier": supplier.name, "error": str(e)})
+
+        frappe.db.commit()
+
+        return {
+            "success": True,
+            "synced": synced,
+            "errors": errors,
+            "message": _("{0} supplier(s) synced, {1} error(s)").format(len(synced), len(errors))
+        }
+
+    except Exception as e:
+        frappe.log_error(frappe.get_traceback(), "QuickBooks Supplier Sync Error")
+        frappe.throw(_("Error while syncing suppliers: {0}").format(str(e)))
+
+
+
 def sync_purchase_invoice_to_quickbooks(doc, method):
 
     settings = frappe.get_doc("QuickBooks Settings")
@@ -692,70 +783,6 @@ def sync_purchase_invoice_to_quickbooks(doc, method):
     """Hook function to sync Purchase Invoice to QuickBooks on submit."""
     sync_single_purchase_invoice_to_quickbooks(doc.name)
 
-@frappe.whitelist()
-def sync_single_purchase_invoice_to_quickbooks(purchase_invoice_name):
-    """Sync a specific Purchase Invoice to QuickBooks as a Purchase Order on Submit (clean version)."""
-
-    invoice = frappe.get_doc("Purchase Invoice", purchase_invoice_name)
-
-    if invoice.get("custom_quickbooks_bill_id"):
-        frappe.msgprint(f"Purchase Invoice {purchase_invoice_name} is already synced with QuickBooks.")
-        return
-
-    settings = frappe.get_single("QuickBooks Settings")
-    access_token = settings.access_token
-    realm_id = settings.quickbooks_company_id
-    minor_version = settings.minor_version or "75"
-    base_url = f"https://{settings.base_url.replace('https://', '').strip('/')}/v3/company/{realm_id}"
-
-    vendor_qb_id = frappe.db.get_value("Supplier", invoice.supplier, "custom_quickbooks_supplier_id")
-    if not vendor_qb_id:
-        frappe.throw(f"QuickBooks Vendor ID not found for Supplier: {invoice.supplier}.")
-
-    line_items = []
-
-    for item in invoice.items:
-        item_qb_id = frappe.db.get_value("Item", item.item_code, "custom_quickbooks_item_id")
-        if not item_qb_id:
-            frappe.throw(f"QuickBooks Item ID not found for Item: {item.item_code}.")
-
-        line_items.append({
-            "DetailType": "ItemBasedExpenseLineDetail",
-            "Amount": float(item.amount),
-            "ItemBasedExpenseLineDetail": {
-                "ItemRef": {"value": item_qb_id},
-                "Qty": float(item.qty),
-                "UnitPrice": float(item.rate)
-            }
-        })
-
-    payload = {
-        "VendorRef": {"value": vendor_qb_id},
-        "TxnDate": str(invoice.posting_date),
-        "Line": line_items
-    }
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-
-    po_url = f"{base_url}/purchaseorder?minorversion={minor_version}"
-
-    try:
-        response = requests.post(po_url, headers=headers, json=payload)
-        response_json = response.json()
-    except Exception as e:
-        frappe.throw(f"QuickBooks sync failed due to a request error: {str(e)}")
-
-    if response.status_code == 200 and "PurchaseOrder" in response_json:
-        qb_po_id = response_json["PurchaseOrder"]["Id"]
-        frappe.db.set_value("Purchase Invoice", invoice.name, "custom_quickbooks_bill_id", qb_po_id)
-        frappe.db.commit()
-        frappe.msgprint(f"Purchase Invoice {invoice.name} synced as Purchase Order in QuickBooks. ID: {qb_po_id}")
-    else:
-        frappe.throw(f"QuickBooks sync failed. Response: {response.text}")
 
 
 @frappe.whitelist()

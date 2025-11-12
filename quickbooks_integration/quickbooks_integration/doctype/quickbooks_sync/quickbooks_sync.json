@@ -1,153 +1,229 @@
+
+
 {
- "actions": [],
- "allow_rename": 1,
- "creation": "2025-06-06 13:26:49.486051",
- "doctype": "DocType",
- "engine": "InnoDB",
- "field_order": [
-  "customers_tab",
-  "master_data_setting_section",
-  "sync_customers",
-  "column_break_elpf",
-  "sync_customers_to_quickbooks",
-  "items_tab",
-  "sync_items",
-  "column_break_gjaz",
-  "sync_items_to_quickbooks",
-  "suppliers_tab",
-  "sync_suppliers",
-  "invoice_list_tab",
-  "sync_sales_invoices_section",
-  "sync_sales_invoices",
-  "refresh_sales_invoices",
-  "column_break_cxpu",
-  "count",
-  "sales_invoice_list_section",
-  "sales_invoice_list"
- ],
- "fields": [
-  {
-   "fieldname": "master_data_setting_section",
-   "fieldtype": "Section Break"
-  },
-  {
-   "description": "Quickbooks ---> Prosessed",
-   "fieldname": "sync_customers",
-   "fieldtype": "Button",
-   "label": "Sync Customers from Quickbooks"
-  },
-  {
-   "fieldname": "items_tab",
-   "fieldtype": "Tab Break",
-   "label": "Items"
-  },
-  {
-   "description": "Quickbooks ---> Prosessed",
-   "fieldname": "sync_items",
-   "fieldtype": "Button",
-   "label": "Sync Items"
-  },
-  {
-   "fieldname": "suppliers_tab",
-   "fieldtype": "Tab Break",
-   "label": "Suppliers"
-  },
-  {
-   "fieldname": "sync_suppliers",
-   "fieldtype": "Button",
-   "label": "Sync Suppliers"
-  },
-  {
-   "fieldname": "customers_tab",
-   "fieldtype": "Tab Break",
-   "label": "Customers"
-  },
-  {
-   "fieldname": "column_break_elpf",
-   "fieldtype": "Column Break"
-  },
-  {
-   "description": "Prosessed ---> Quickbooks",
-   "fieldname": "sync_customers_to_quickbooks",
-   "fieldtype": "Button",
-   "label": "Sync Customers to Quickbooks"
-  },
-  {
-   "fieldname": "invoice_list_tab",
-   "fieldtype": "Tab Break",
-   "label": "Invoice List"
-  },
-  {
-   "collapsible": 1,
-   "fieldname": "sales_invoice_list_section",
-   "fieldtype": "Section Break",
-   "label": "Sales Invoice List"
-  },
-  {
-   "fieldname": "sales_invoice_list",
-   "fieldtype": "Table",
-   "label": "Sales Invoice List",
-   "options": "Sales Invoice List"
-  },
-  {
-   "description": "Prosessed ---> Quickbooks",
-   "fieldname": "sync_sales_invoices_section",
-   "fieldtype": "Section Break",
-   "label": "Sync Sales Invoices"
-  },
-  {
-   "fieldname": "sync_sales_invoices",
-   "fieldtype": "Button",
-   "label": "Sync Sales Invoices"
-  },
-  {
-   "fieldname": "column_break_cxpu",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "count",
-   "fieldtype": "Data",
-   "label": "Count"
-  },
-  {
-   "fieldname": "column_break_gjaz",
-   "fieldtype": "Column Break"
-  },
-  {
-   "description": "Prosessed ---> Quickbooks",
-   "fieldname": "sync_items_to_quickbooks",
-   "fieldtype": "Button",
-   "label": "Sync Items to Quickbooks"
-  },
-  {
-   "fieldname": "refresh_sales_invoices",
-   "fieldtype": "Button",
-   "label": "Refresh Sales Invoices"
-  }
- ],
- "grid_page_length": 50,
- "index_web_pages_for_search": 1,
- "issingle": 1,
- "links": [],
- "modified": "2025-09-23 14:02:44.864461",
- "modified_by": "Administrator",
- "module": "Quickbooks Integration",
- "name": "QuickBooks Sync",
- "owner": "Administrator",
- "permissions": [
-  {
-   "create": 1,
-   "delete": 1,
-   "email": 1,
-   "print": 1,
-   "read": 1,
-   "role": "System Manager",
-   "share": 1,
-   "write": 1
-  }
- ],
- "row_format": "Dynamic",
- "sort_field": "modified",
- "sort_order": "DESC",
- "states": []
-}
+    "actions": [],
+    "allow_rename": 1,
+    "creation": "2025-06-06 13:26:49.486051",
+    "doctype": "DocType",
+    "engine": "InnoDB",
+    "field_order": [
+     "customers_tab",
+     "master_data_setting_section",
+     "sync_customers",
+     "column_break_elpf",
+     "sync_customers_to_quickbooks",
+     "items_tab",
+     "sync_items",
+     "column_break_gjaz",
+     "sync_items_to_quickbooks",
+     "suppliers_tab",
+     "sync_suppliers",
+     "suppliers_direction_label_from_qbo",
+     "column_break_sup",
+     "sync_suppliers_to_quickbooks",
+     "suppliers_direction_label_to_qbo",
+     "invoice_list_tab",
+     "sync_sales_invoices_section",
+     "sync_sales_invoices",
+     "refresh_sales_invoices",
+     "column_break_cxpu",
+     "count",
+     "sales_invoice_list_section",
+     "sales_invoice_list",
+     "purchase_invoice_tab",
+     "purchase_invoice_list_section",
+     "purchase_invoice_list",
+     "sync_purchase_invoices_section",
+     "sync_purchase_invoices",
+     "column_break_pxinv",
+     "refresh_purchase_invoices",
+     "purchase_count"
+    ],
+    "fields": [
+     {
+      "fieldname": "master_data_setting_section",
+      "fieldtype": "Section Break"
+     },
+     {
+      "description": "Quickbooks ---> Prosessed",
+      "fieldname": "sync_customers",
+      "fieldtype": "Button",
+      "label": "Sync Customers from Quickbooks"
+     },
+     {
+      "fieldname": "items_tab",
+      "fieldtype": "Tab Break",
+      "label": "Items"
+     },
+     {
+      "description": "Quickbooks ---> Prosessed",
+      "fieldname": "sync_items",
+      "fieldtype": "Button",
+      "label": "Sync Items"
+     },
+     {
+      "fieldname": "suppliers_tab",
+      "fieldtype": "Tab Break",
+      "label": "Suppliers"
+     },
+     {
+      "fieldname": "sync_suppliers",
+      "fieldtype": "Button",
+      "label": "Sync Suppliers from QuickBooks"
+     },
+     {
+      "fieldname": "suppliers_direction_label_from_qbo",
+      "fieldtype": "HTML",
+      "options": "<div style='margin-top:5px;color:#888;font-size:12px;'>QuickBooks ---> Prosessed</div>"
+     },
+     {
+      "fieldname": "column_break_sup",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "sync_suppliers_to_quickbooks",
+      "fieldtype": "Button",
+      "label": "Sync Suppliers to QuickBooks"
+     },
+     {
+      "fieldname": "suppliers_direction_label_to_qbo",
+      "fieldtype": "HTML",
+      "options": "<div style='margin-top:5px;color:#888;font-size:12px;'>Prosessed ---> QuickBooks</div>"
+     },
+     {
+      "fieldname": "customers_tab",
+      "fieldtype": "Tab Break",
+      "label": "Customers"
+     },
+     {
+      "fieldname": "column_break_elpf",
+      "fieldtype": "Column Break"
+     },
+     {
+      "description": "Prosessed ---> Quickbooks",
+      "fieldname": "sync_customers_to_quickbooks",
+      "fieldtype": "Button",
+      "label": "Sync Customers to Quickbooks"
+     },
+     {
+      "fieldname": "invoice_list_tab",
+      "fieldtype": "Tab Break",
+      "label": "Invoice List"
+     },
+     {
+      "collapsible": 1,
+      "fieldname": "sales_invoice_list_section",
+      "fieldtype": "Section Break",
+      "label": "Sales Invoice List"
+     },
+     {
+      "fieldname": "sales_invoice_list",
+      "fieldtype": "Table",
+      "label": "Sales Invoice List",
+      "options": "Sales Invoice List"
+     },
+     {
+      "description": "Prosessed ---> Quickbooks",
+      "fieldname": "sync_sales_invoices_section",
+      "fieldtype": "Section Break",
+      "label": "Sync Sales Invoices"
+     },
+     {
+      "fieldname": "sync_sales_invoices",
+      "fieldtype": "Button",
+      "label": "Sync Sales Invoices"
+     },
+     {
+      "fieldname": "column_break_cxpu",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "count",
+      "fieldtype": "Data",
+      "label": "Count"
+     },
+     {
+      "fieldname": "column_break_gjaz",
+      "fieldtype": "Column Break"
+     },
+     {
+      "description": "Prosessed ---> Quickbooks",
+      "fieldname": "sync_items_to_quickbooks",
+      "fieldtype": "Button",
+      "label": "Sync Items to Quickbooks"
+     },
+     {
+      "fieldname": "refresh_sales_invoices",
+      "fieldtype": "Button",
+      "label": "Refresh Sales Invoices"
+     },
+     {
+      "fieldname": "purchase_invoice_tab",
+      "fieldtype": "Tab Break",
+      "label": "Purchase Invoices"
+     },
+     {
+      "collapsible": 1,
+      "fieldname": "purchase_invoice_list_section",
+      "fieldtype": "Section Break",
+      "label": "Purchase Invoice List"
+     },
+     {
+      "fieldname": "purchase_invoice_list",
+      "fieldtype": "Table",
+      "label": "Purchase Invoice List",
+      "options": "Purchase Invoice List"
+     },
+     {
+      "description": "Prosessed ---> Quickbooks",
+      "fieldname": "sync_purchase_invoices_section",
+      "fieldtype": "Section Break",
+      "label": "Sync Purchase Invoices"
+     },
+     {
+      "fieldname": "sync_purchase_invoices",
+      "fieldtype": "Button",
+      "label": "Sync Purchase Invoices"
+     },
+     {
+      "fieldname": "column_break_pxinv",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "refresh_purchase_invoices",
+      "fieldtype": "Button",
+      "label": "Refresh Purchase Invoices"
+     },
+     {
+      "fieldname": "purchase_count",
+      "fieldtype": "Data",
+      "label": "Count"
+     }
+    ],
+    "grid_page_length": 50,
+    "index_web_pages_for_search": 1,
+    "issingle": 1,
+    "links": [],
+    "modified": "2025-09-23 14:02:44.864461",
+    "modified_by": "Administrator",
+    "module": "Quickbooks Integration",
+    "name": "QuickBooks Sync",
+    "owner": "Administrator",
+    "permissions": [
+     {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+     }
+    ],
+    "row_format": "Dynamic",
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": []
+   }
+   

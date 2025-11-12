@@ -1,275 +1,291 @@
+
+
 {
- "actions": [],
- "allow_rename": 1,
- "creation": "2025-06-06 13:24:20.752483",
- "doctype": "DocType",
- "engine": "InnoDB",
- "field_order": [
-  "authorization_tab",
-  "enable",
-  "app_credentials_section",
-  "quickbooks_client_id",
-  "quickbooks_client_secret",
-  "auth_scope",
-  "column_break_uisr",
-  "quickbooks_company_id",
-  "redirect_uri",
-  "csrf_token",
-  "quickbooks_auth_details_section",
-  "quickbooks_authorization_url",
-  "quickbooks_tokenendpoint",
-  "column_break_gcpe",
-  "minor_version",
-  "base_url",
-  "authorization_state_section",
-  "token_expiry",
-  "is_authorized",
-  "column_break_stsn",
-  "access_token",
-  "refresh_token",
-  "webhook_secret_section",
-  "webhook_secret",
-  "master_data_setting_tab",
-  "customer_section",
-  "allow_customer_sync_from_quickbooks",
-  "allow_customer_sync_prosessed",
-  "items_section",
-  "allow_item_sync_from_quickbooks",
-  "allow_item_sync_to_quickbooks",
-  "column_break_qmue",
-  "send_item",
-  "suppliers_section",
-  "allow_supplier_sync_from_quickbooks"
- ],
- "fields": [
-  {
-   "default": "0",
-   "fieldname": "enable",
-   "fieldtype": "Check",
-   "label": "Enable"
-  },
-  {
-   "fieldname": "quickbooks_auth_details_section",
-   "fieldtype": "Section Break",
-   "label": "QuickBooks Auth Details"
-  },
-  {
-   "fieldname": "quickbooks_client_id",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "QuickBooks Client ID",
-   "reqd": 1
-  },
-  {
-   "fieldname": "quickbooks_client_secret",
-   "fieldtype": "Data",
-   "in_list_view": 1,
-   "label": "QuickBooks Client Secret",
-   "reqd": 1
-  },
-  {
-   "fieldname": "app_credentials_section",
-   "fieldtype": "Section Break",
-   "label": "App Credentials"
-  },
-  {
-   "fieldname": "column_break_uisr",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "quickbooks_company_id",
-   "fieldtype": "Data",
-   "label": "QuickBooks Company ID\t",
-   "reqd": 1
-  },
-  {
-   "default": "https://oauth.pstmn.io/v1/browser-callback",
-   "fieldname": "redirect_uri",
-   "fieldtype": "Data",
-   "label": "Redirect URI\t",
-   "reqd": 1
-  },
-  {
-   "default": "https://appcenter.intuit.com/connect/oauth2",
-   "fieldname": "quickbooks_authorization_url",
-   "fieldtype": "Data",
-   "label": "QuickBooks Authorization URL\t",
-   "reqd": 1
-  },
-  {
-   "default": "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
-   "fieldname": "quickbooks_tokenendpoint",
-   "fieldtype": "Data",
-   "label": "QuickBooks TokenEndpoint\t",
-   "reqd": 1
-  },
-  {
-   "fieldname": "authorization_state_section",
-   "fieldtype": "Section Break",
-   "label": "Authorization State"
-  },
-  {
-   "fieldname": "auth_scope",
-   "fieldtype": "Data",
-   "label": "Auth Scope",
-   "reqd": 1
-  },
-  {
-   "fieldname": "csrf_token",
-   "fieldtype": "Data",
-   "label": "CSRF Token",
-   "reqd": 1
-  },
-  {
-   "fieldname": "column_break_gcpe",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "minor_version",
-   "fieldtype": "Data",
-   "label": "Minor Version",
-   "reqd": 1
-  },
-  {
-   "fieldname": "base_url",
-   "fieldtype": "Data",
-   "label": "Base Url",
-   "reqd": 1
-  },
-  {
-   "fieldname": "token_expiry",
-   "fieldtype": "Datetime",
-   "ignore_user_permissions": 1,
-   "label": "Token Expiry"
-  },
-  {
-   "default": "0",
-   "fieldname": "is_authorized",
-   "fieldtype": "Check",
-   "ignore_user_permissions": 1,
-   "label": "Is Authorized"
-  },
-  {
-   "fieldname": "column_break_stsn",
-   "fieldtype": "Column Break"
-  },
-  {
-   "fieldname": "access_token",
-   "fieldtype": "Data",
-   "ignore_user_permissions": 1,
-   "label": "Access Token"
-  },
-  {
-   "fieldname": "refresh_token",
-   "fieldtype": "Data",
-   "ignore_user_permissions": 1,
-   "label": "Refresh Token"
-  },
-  {
-   "fieldname": "authorization_tab",
-   "fieldtype": "Tab Break",
-   "label": "Authorization"
-  },
-  {
-   "fieldname": "master_data_setting_tab",
-   "fieldtype": "Tab Break",
-   "label": "Master Data Setting"
-  },
-  {
-   "fieldname": "customer_section",
-   "fieldtype": "Section Break",
-   "label": "Customer"
-  },
-  {
-   "default": "0",
-   "description": "Quickbooks ---> Prosessed",
-   "fieldname": "allow_customer_sync_from_quickbooks",
-   "fieldtype": "Check",
-   "label": "Allow Customer Sync from Quickbooks"
-  },
-  {
-   "default": "0",
-   "description": "Prosessed ---> Quickbooks",
-   "fieldname": "allow_customer_sync_prosessed",
-   "fieldtype": "Check",
-   "label": "Allow Customer Sync to Quickbooks"
-  },
-  {
-   "fieldname": "items_section",
-   "fieldtype": "Section Break",
-   "label": "Items"
-  },
-  {
-   "default": "0",
-   "description": "Quickbooks ---> Prosessed",
-   "fieldname": "allow_item_sync_from_quickbooks",
-   "fieldtype": "Check",
-   "label": "Allow Item Sync from Quickbooks"
-  },
-  {
-   "fieldname": "column_break_qmue",
-   "fieldtype": "Column Break"
-  },
-  {
-   "default": "0",
-   "description": "Prosessed ---> Quickbooks",
-   "fieldname": "send_item",
-   "fieldtype": "Check",
-   "label": "Send Item"
-  },
-  {
-   "fieldname": "suppliers_section",
-   "fieldtype": "Section Break",
-   "label": "Suppliers"
-  },
-  {
-   "default": "0",
-   "description": "Quickbooks ---> Prosessed",
-   "fieldname": "allow_supplier_sync_from_quickbooks",
-   "fieldtype": "Check",
-   "label": "Allow Supplier Sync from Quickbooks"
-  },
-  {
-   "default": "0",
-   "description": "Prosessed --->  Quickbooks ",
-   "fieldname": "allow_item_sync_to_quickbooks",
-   "fieldtype": "Check",
-   "label": "Allow Item Sync to Quickbooks"
-  },
-  {
-   "fieldname": "webhook_secret_section",
-   "fieldtype": "Section Break",
-   "label": "Webhook Secret"
-  },
-  {
-   "fieldname": "webhook_secret",
-   "fieldtype": "Password",
-   "label": "Webhook Secret"
-  }
- ],
- "grid_page_length": 50,
- "index_web_pages_for_search": 1,
- "issingle": 1,
- "links": [],
- "modified": "2025-07-22 21:24:41.841452",
- "modified_by": "Administrator",
- "module": "Quickbooks Integration",
- "name": "QuickBooks Settings",
- "owner": "Administrator",
- "permissions": [
-  {
-   "create": 1,
-   "delete": 1,
-   "email": 1,
-   "print": 1,
-   "read": 1,
-   "role": "System Manager",
-   "share": 1,
-   "write": 1
-  }
- ],
- "row_format": "Dynamic",
- "sort_field": "modified",
- "sort_order": "DESC",
- "states": []
-}
+    "actions": [],
+    "allow_rename": 1,
+    "creation": "2025-06-06 13:24:20.752483",
+    "doctype": "DocType",
+    "engine": "InnoDB",
+    "field_order": [
+     "authorization_tab",
+     "enable",
+     "app_credentials_section",
+     "quickbooks_client_id",
+     "quickbooks_client_secret",
+     "auth_scope",
+     "column_break_uisr",
+     "quickbooks_company_id",
+     "redirect_uri",
+     "csrf_token",
+     "quickbooks_auth_details_section",
+     "quickbooks_authorization_url",
+     "quickbooks_tokenendpoint",
+     "column_break_gcpe",
+     "minor_version",
+     "base_url",
+     "authorization_state_section",
+     "token_expiry",
+     "is_authorized",
+     "column_break_stsn",
+     "access_token",
+     "refresh_token",
+     "webhook_secret_section",
+     "webhook_secret",
+     "master_data_setting_tab",
+     "customer_section",
+     "allow_customer_sync_from_quickbooks",
+     "allow_customer_sync_prosessed",
+     "items_section",
+     "allow_item_sync_from_quickbooks",
+     "allow_item_sync_to_quickbooks",
+     "column_break_qmue",
+     "send_item",
+     "suppliers_section",
+     "allow_supplier_sync_from_quickbooks",
+     "column_break_suppliers",
+     "allow_supplier_sync_to_quickbooks"
+    ],
+    "fields": [
+     {
+      "default": "0",
+      "fieldname": "enable",
+      "fieldtype": "Check",
+      "label": "Enable"
+     },
+     {
+      "fieldname": "quickbooks_auth_details_section",
+      "fieldtype": "Section Break",
+      "label": "QuickBooks Auth Details"
+     },
+     {
+      "fieldname": "quickbooks_client_id",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "QuickBooks Client ID",
+      "reqd": 1
+     },
+     {
+      "fieldname": "quickbooks_client_secret",
+      "fieldtype": "Data",
+      "in_list_view": 1,
+      "label": "QuickBooks Client Secret",
+      "reqd": 1
+     },
+     {
+      "fieldname": "app_credentials_section",
+      "fieldtype": "Section Break",
+      "label": "App Credentials"
+     },
+     {
+      "fieldname": "column_break_uisr",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "quickbooks_company_id",
+      "fieldtype": "Data",
+      "label": "QuickBooks Company ID\t",
+      "reqd": 1
+     },
+     {
+      "default": "https://oauth.pstmn.io/v1/browser-callback",
+      "fieldname": "redirect_uri",
+      "fieldtype": "Data",
+      "label": "Redirect URI\t",
+      "reqd": 1
+     },
+     {
+      "default": "https://appcenter.intuit.com/connect/oauth2",
+      "fieldname": "quickbooks_authorization_url",
+      "fieldtype": "Data",
+      "label": "QuickBooks Authorization URL\t",
+      "reqd": 1
+     },
+     {
+      "default": "https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer",
+      "fieldname": "quickbooks_tokenendpoint",
+      "fieldtype": "Data",
+      "label": "QuickBooks TokenEndpoint\t",
+      "reqd": 1
+     },
+     {
+      "fieldname": "authorization_state_section",
+      "fieldtype": "Section Break",
+      "label": "Authorization State"
+     },
+     {
+      "fieldname": "auth_scope",
+      "fieldtype": "Data",
+      "label": "Auth Scope",
+      "reqd": 1
+     },
+     {
+      "fieldname": "csrf_token",
+      "fieldtype": "Data",
+      "label": "CSRF Token",
+      "reqd": 1
+     },
+     {
+      "fieldname": "column_break_gcpe",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "minor_version",
+      "fieldtype": "Data",
+      "label": "Minor Version",
+      "reqd": 1
+     },
+     {
+      "fieldname": "base_url",
+      "fieldtype": "Data",
+      "label": "Base Url",
+      "reqd": 1
+     },
+     {
+      "fieldname": "token_expiry",
+      "fieldtype": "Datetime",
+      "ignore_user_permissions": 1,
+      "label": "Token Expiry"
+     },
+     {
+      "default": "0",
+      "fieldname": "is_authorized",
+      "fieldtype": "Check",
+      "ignore_user_permissions": 1,
+      "label": "Is Authorized"
+     },
+     {
+      "fieldname": "column_break_stsn",
+      "fieldtype": "Column Break"
+     },
+     {
+      "fieldname": "access_token",
+      "fieldtype": "Data",
+      "ignore_user_permissions": 1,
+      "label": "Access Token"
+     },
+     {
+      "fieldname": "refresh_token",
+      "fieldtype": "Data",
+      "ignore_user_permissions": 1,
+      "label": "Refresh Token"
+     },
+     {
+      "fieldname": "authorization_tab",
+      "fieldtype": "Tab Break",
+      "label": "Authorization"
+     },
+     {
+      "fieldname": "master_data_setting_tab",
+      "fieldtype": "Tab Break",
+      "label": "Master Data Setting"
+     },
+     {
+      "fieldname": "customer_section",
+      "fieldtype": "Section Break",
+      "label": "Customer"
+     },
+     {
+      "default": "0",
+      "description": "Quickbooks ---> Prosessed",
+      "fieldname": "allow_customer_sync_from_quickbooks",
+      "fieldtype": "Check",
+      "label": "Allow Customer Sync from Quickbooks"
+     },
+     {
+      "default": "0",
+      "description": "Prosessed ---> Quickbooks",
+      "fieldname": "allow_customer_sync_prosessed",
+      "fieldtype": "Check",
+      "label": "Allow Customer Sync to Quickbooks"
+     },
+     {
+      "fieldname": "items_section",
+      "fieldtype": "Section Break",
+      "label": "Items"
+     },
+     {
+      "default": "0",
+      "description": "Quickbooks ---> Prosessed",
+      "fieldname": "allow_item_sync_from_quickbooks",
+      "fieldtype": "Check",
+      "label": "Allow Item Sync from Quickbooks"
+     },
+     {
+      "default": "0",
+      "description": "Prosessed --->  Quickbooks ",
+      "fieldname": "allow_item_sync_to_quickbooks",
+      "fieldtype": "Check",
+      "label": "Allow Item Sync to Quickbooks"
+     },
+     {
+      "fieldname": "column_break_qmue",
+      "fieldtype": "Column Break"
+     },
+     {
+      "default": "0",
+      "description": "Prosessed ---> Quickbooks",
+      "fieldname": "send_item",
+      "fieldtype": "Check",
+      "label": "Send Item"
+     },
+     {
+      "fieldname": "suppliers_section",
+      "fieldtype": "Section Break",
+      "label": "Suppliers"
+     },
+     {
+      "default": "0",
+      "description": "Quickbooks ---> Prosessed",
+      "fieldname": "allow_supplier_sync_from_quickbooks",
+      "fieldtype": "Check",
+      "label": "Allow Supplier Sync from Quickbooks"
+     },
+     {
+      "fieldname": "column_break_suppliers",
+      "fieldtype": "Column Break"
+     },
+     {
+      "default": "0",
+      "description": "Prosessed ---> Quickbooks",
+      "fieldname": "allow_supplier_sync_to_quickbooks",
+      "fieldtype": "Check",
+      "label": "Allow Supplier Sync to Quickbooks"
+     },
+     {
+      "fieldname": "webhook_secret_section",
+      "fieldtype": "Section Break",
+      "label": "Webhook Secret"
+     },
+     {
+      "fieldname": "webhook_secret",
+      "fieldtype": "Password",
+      "label": "Webhook Secret"
+     }
+    ],
+    "grid_page_length": 50,
+    "index_web_pages_for_search": 1,
+    "issingle": 1,
+    "links": [],
+    "modified": "2025-07-22 21:24:41.841452",
+    "modified_by": "Administrator",
+    "module": "Quickbooks Integration",
+    "name": "QuickBooks Settings",
+    "owner": "Administrator",
+    "permissions": [
+     {
+      "create": 1,
+      "delete": 1,
+      "email": 1,
+      "print": 1,
+      "read": 1,
+      "role": "System Manager",
+      "share": 1,
+      "write": 1
+     }
+    ],
+    "row_format": "Dynamic",
+    "sort_field": "modified",
+    "sort_order": "DESC",
+    "states": []
+   }
+   
