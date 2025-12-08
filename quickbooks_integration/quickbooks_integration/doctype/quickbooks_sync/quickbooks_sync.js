@@ -11,8 +11,10 @@ frappe.ui.form.on("QuickBooks Sync", {
         frm.get_field("sync_sales_invoices").$input.addClass('btn-primary');
         frm.get_field("refresh_sales_invoices").$input.addClass('btn-primary');
         frm.get_field("sync_items_to_quickbooks").$input.addClass('btn-primary');
+        frm.get_field("sync_item_images").$input.addClass('btn-primary');
         frm.get_field("sync_purchase_invoices").$input.addClass('btn-primary');
         frm.get_field("refresh_purchase_invoices").$input.addClass('btn-primary');
+        frm.get_field("sync_stock").$input.addClass('btn-primary');
 
 
        
@@ -193,6 +195,30 @@ frappe.ui.form.on("QuickBooks Sync", {
             callback: (r) => {
                 if (!r.exc) {
                     frappe.msgprint("Item sync to quickbooks has started in background.");
+                }
+            }
+        });
+    },
+
+    sync_item_images(frm) {
+        frappe.call({
+            method: "quickbooks_integration.api.start_item_images_sync_background",
+            args: {},
+            callback: (r) => {
+                if (!r.exc) {
+                    frappe.msgprint("Item images sync from QuickBooks has started in background.");
+                }
+            }
+        });
+    },
+
+    sync_stock(frm) {
+        frappe.call({
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_stock_sync_background",
+            args: {},
+            callback: (r) => {
+                if (!r.exc) {
+                    frappe.msgprint("Stock sync and reconciliation from QuickBooks has started in background.");
                 }
             }
         });

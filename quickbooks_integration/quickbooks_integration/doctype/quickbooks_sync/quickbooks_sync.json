@@ -16,6 +16,8 @@
      "sync_items",
      "column_break_gjaz",
      "sync_items_to_quickbooks",
+     "sync_item_images",
+     "sync_stock",
      "suppliers_tab",
      "sync_suppliers",
      "suppliers_direction_label_from_qbo",
@@ -151,6 +153,18 @@
       "fieldname": "sync_items_to_quickbooks",
       "fieldtype": "Button",
       "label": "Sync Items to Quickbooks"
+     },
+     {
+      "description": "Quickbooks ---> Prosessed",
+      "fieldname": "sync_item_images",
+      "fieldtype": "Button",
+      "label": "Sync Item Images"
+     },
+     {
+      "description": "Quickbooks ---> Prosessed - Sync Stock & Reconciliation",
+      "fieldname": "sync_stock",
+      "fieldtype": "Button",
+      "label": "Sync Stock & Reconciliation"
      },
      {
       "fieldname": "refresh_sales_invoices",
