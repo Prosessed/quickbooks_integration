@@ -621,8 +621,26 @@ def create_or_update_item(qb_item):
     if "UnitPrice" in qb_item:
         item.standard_rate = float(qb_item["UnitPrice"])
 
-    # Assign item group only for new items
-    if not existing:
+    # Map category from QBO to item group in ERPNext
+    # Check if the item has a ParentRef (category) from QuickBooks
+    parent_ref = qb_item.get("ParentRef")
+    category_mapped = False
+    
+    if parent_ref:
+        parent_qb_id = parent_ref.get("value")
+        if parent_qb_id:
+            # Find the Item Group in ERPNext that matches the QuickBooks category ID
+            item_group_name = frappe.db.get_value("Item Group", {"custom_quickbooks_item_group_id": parent_qb_id}, "name")
+            if item_group_name:
+                item.item_group = item_group_name
+                category_mapped = True
+                frappe.logger().info(f"[Item Sync] Mapped QBO category {parent_qb_id} to Item Group '{item_group_name}' for item '{item_name}'")
+            else:
+                # Category not found in ERPNext
+                frappe.logger().warn(f"[Item Sync] QBO category {parent_qb_id} not found in ERPNext Item Groups. Using default for item '{item_name}'")
+    
+    # If no category was mapped, use default item group for new items
+    if not category_mapped and not existing:
         item.item_group = "All Item Groups"
 
     try:
@@ -634,6 +652,128 @@ def create_or_update_item(qb_item):
         # Log error if saving the item fails, include item name in the log
         error_message = f"Failed to sync item '{item_name}' (QB ID: {qb_id}) due to error: {str(e)}"
         frappe.log_error(message=error_message, title=f"Failed to sync item {qb_id}")
+
+@frappe.whitelist()
+def start_item_group_background():
+    """Enqueue item group sync job to run in background."""
+    refresh_quickbooks_access_token()
+
+    settings = frappe.get_doc("QuickBooks Settings")
+    if settings.allow_item_sync_from_quickbooks != 1 and not settings.enable:
+        frappe.frappe.msgprint('Navigate to Quickbooks Settings & Please enable Item sync to continue', title="QuickBooks Item Group Sync Disabled",
+                                indicator="red",
+                            )
+        return
+
+    frappe.enqueue(sync_item_groups_from_quickbooks, queue='long', timeout=300)
+    frappe.msgprint("Item Group sync from QuickBooks has been started in the background.")
+
+@frappe.whitelist()
+def sync_item_groups_from_quickbooks():
+    """Sync item groups from QuickBooks to ERPNext with pagination support."""
+    frappe.logger().info("[QB SYNC] Started item group sync job")
+    
+    settings = frappe.get_doc("QuickBooks Settings")
+    access_token = settings.access_token
+    company_id = settings.quickbooks_company_id
+    base_url = settings.base_url.strip().rstrip("/")
+    minor_version = settings.minor_version or "75"
+
+    if not access_token or not company_id:
+        frappe.log_error("Missing QuickBooks access token or company ID", "QuickBooks Item Group Sync Failed")
+        return
+
+    start_position = 1
+    max_results = 100  # QuickBooks allows max 100 per page
+
+    while True:
+        # Query Item Groups (Items with Type="Category") from QuickBooks
+        query = f"SELECT * FROM Item WHERE Type='Category' STARTPOSITION {start_position} MAXRESULTS {max_results}"
+        url = f"{base_url}/v3/company/{company_id}/query?query={query.replace(' ', '%20')}&minorversion={minor_version}"
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+
+            item_groups = data.get("QueryResponse", {}).get("Item", [])
+            if not item_groups:
+                break  # No more item groups to fetch
+
+            for qb_item_group in item_groups:
+                create_or_update_item_group(qb_item_group)
+
+            frappe.logger().info(f"[QB SYNC] Fetched {len(item_groups)} item groups starting from {start_position}.")
+
+            if len(item_groups) < max_results:
+                break  # Last page reached
+
+            start_position += max_results
+
+        except Exception as e:
+            frappe.log_error(message=str(e), title="QuickBooks Item Group Sync Failed")
+            break
+
+    frappe.logger().info("[QB SYNC] Completed item group sync job")
+    frappe.db.commit()
+
+@frappe.whitelist()
+def create_or_update_item_group(qb_item_group):
+    """Create or update item group in ERPNext based on QuickBooks item group data."""
+    
+    qb_id = qb_item_group.get("Id")
+    if not qb_id:
+        frappe.logger().error("[QB SYNC] Missing Item Group ID in QuickBooks data.")
+        return
+
+    group_name = qb_item_group.get("Name") or qb_item_group.get("Description") or "Unnamed Item Group"
+    
+    # Check if the item group already exists in ERPNext by QuickBooks ID
+    existing = frappe.db.exists("Item Group", {"custom_quickbooks_item_group_id": qb_id})
+    
+    if existing:
+        item_group = frappe.get_doc("Item Group", existing)
+        frappe.logger().info(f"[QB SYNC] Updating item group: {group_name} (QB ID: {qb_id})")
+    else:
+        item_group = frappe.new_doc("Item Group")
+        frappe.logger().info(f"[QB SYNC] Creating new item group: {group_name} (QB ID: {qb_id})")
+
+    # Set item group properties
+    item_group.item_group_name = group_name
+    item_group.custom_quickbooks_item_group_id = qb_id
+    item_group.is_group = 1
+    
+    # Handle parent item group if exists
+    parent_ref = qb_item_group.get("ParentRef")
+    if parent_ref:
+        parent_qb_id = parent_ref.get("value")
+        if parent_qb_id:
+            # Find parent item group in ERPNext by QuickBooks ID
+            parent_item_group = frappe.db.get_value("Item Group", {"custom_quickbooks_item_group_id": parent_qb_id}, "name")
+            if parent_item_group:
+                item_group.parent_item_group = parent_item_group
+            else:
+                # Parent doesn't exist yet, will be set on next sync
+                frappe.logger().warn(f"[QB SYNC] Parent item group with QB ID {parent_qb_id} not found. Will be set on next sync.")
+
+    # Set default parent if not set
+    if not item_group.parent_item_group:
+        item_group.parent_item_group = "All Item Groups"
+
+    try:
+        # Save item group and commit
+        item_group.save(ignore_permissions=True)
+        frappe.logger().info(f"[Item Group Sync] Item Group '{group_name}' (QB ID: {qb_id}) synced successfully.")
+    except Exception as e:
+        # Log error if saving the item group fails
+        error_message = f"Failed to sync item group '{group_name}' (QB ID: {qb_id}) due to error: {str(e)}"
+        frappe.log_error(message=error_message, title=f"Failed to sync item group {qb_id}")
 
 @frappe.whitelist()
 def sync_supplier_background():

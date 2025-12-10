@@ -18,6 +18,7 @@
      "sync_items_to_quickbooks",
      "sync_item_images",
      "sync_stock",
+     "sync_item_groups",
      "suppliers_tab",
      "sync_suppliers",
      "suppliers_direction_label_from_qbo",
@@ -165,6 +166,12 @@
       "fieldname": "sync_stock",
       "fieldtype": "Button",
       "label": "Sync Stock & Reconciliation"
+     },
+     {
+      "description": "Quickbooks ---> Prosessed",
+      "fieldname": "sync_item_groups",
+      "fieldtype": "Button",
+      "label": "Sync Item Groups"
      },
      {
       "fieldname": "refresh_sales_invoices",

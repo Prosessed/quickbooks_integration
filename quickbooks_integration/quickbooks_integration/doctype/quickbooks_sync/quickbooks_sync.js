@@ -15,6 +15,7 @@ frappe.ui.form.on("QuickBooks Sync", {
         frm.get_field("sync_purchase_invoices").$input.addClass('btn-primary');
         frm.get_field("refresh_purchase_invoices").$input.addClass('btn-primary');
         frm.get_field("sync_stock").$input.addClass('btn-primary');
+        frm.get_field("sync_item_groups").$input.addClass('btn-primary');
 
 
        
@@ -219,6 +220,18 @@ frappe.ui.form.on("QuickBooks Sync", {
             callback: (r) => {
                 if (!r.exc) {
                     frappe.msgprint("Stock sync and reconciliation from QuickBooks has started in background.");
+                }
+            }
+        });
+    },
+
+    sync_item_groups(frm) {
+        frappe.call({
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_item_group_background",
+            args: {},
+            callback: (r) => {
+                if (!r.exc) {
+                    frappe.msgprint("Item Group sync from QuickBooks has started in background.");
                 }
             }
         });

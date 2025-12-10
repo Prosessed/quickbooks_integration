@@ -144,34 +144,108 @@ def fetch_quickbooks_customer_statement(**kwargs):
 
     def get_column_keys(report_json):
         keys = []
-        columns = report_json.get("Columns", {}).get("Column", [])
+        columns_data = report_json.get("Columns", {})
+        
+        # Handle different column structures
+        if isinstance(columns_data, dict):
+            columns = columns_data.get("Column", [])
+        elif isinstance(columns_data, list):
+            columns = columns_data
+        else:
+            columns = []
+            
+        if not columns:
+            # Fallback: try to infer from header
+            header = report_json.get("Header", {})
+            if header:
+                # Use common column names
+                keys = ["date", "transaction_type", "doc_num", "customer", "due_date", "amount", "balance"]
+        
         for idx, column in enumerate(columns):
-            meta = next((md.get("Value") for md in column.get("MetaData", []) if md.get("Name") == "ColKey"), None)
-            keys.append(normalize_key(meta, column.get("ColTitle") or f"col_{idx}"))
-        return keys
+            if isinstance(column, dict):
+                meta = None
+                metadata = column.get("MetaData", [])
+                if metadata:
+                    for md in metadata:
+                        if isinstance(md, dict) and md.get("Name") == "ColKey":
+                            meta = md.get("Value")
+                            break
+                
+                col_title = column.get("ColTitle") or column.get("title") or ""
+                keys.append(normalize_key(meta, col_title or f"col_{idx}"))
+            else:
+                keys.append(f"col_{idx}")
+                
+        return keys if keys else [f"col_{i}" for i in range(10)]  # Default fallback
 
     def coldata_to_dict(coldata, keys):
         record = {}
-        for idx, col in enumerate(coldata or []):
+        if not coldata:
+            return record
+            
+        for idx, col in enumerate(coldata):
+            if not isinstance(col, dict):
+                continue
+                
             key = keys[idx] if idx < len(keys) else f"col_{idx}"
-            if col.get("value") not in (None, ""):
-                record[key] = col.get("value")
-            if col.get("id"):
-                record[f"{key}_id"] = col.get("id")
+            
+            # Extract value - handle different formats
+            value = col.get("value")
+            if value is None:
+                value = col.get("Value")  # Try capitalized
+            if value is None:
+                value = col.get("text") or col.get("Text")
+            
+            if value not in (None, ""):
+                # Clean up value - remove currency symbols and whitespace
+                if isinstance(value, str):
+                    value = value.strip()
+                record[key] = value
+                
+            # Extract ID if present
+            col_id = col.get("id") or col.get("Id") or col.get("ID")
+            if col_id:
+                record[f"{key}_id"] = col_id
+                
         return record
 
     def flatten_rows(row_items, keys, bucket, summary_bucket):
-        for row in row_items or []:
-            row_type = row.get("type")
-            if row_type == "Data":
-                bucket.append(coldata_to_dict(row.get("ColData", []), keys))
-            elif row_type == "Summary":
-                summary_bucket.append(coldata_to_dict(row.get("ColData", []), keys))
+        if not row_items:
+            return
+            
+        # Handle both list and single row
+        if not isinstance(row_items, list):
+            row_items = [row_items]
+            
+        for row in row_items:
+            if not isinstance(row, dict):
+                continue
+                
+            row_type = row.get("type", "").lower()
+            col_data = row.get("ColData", [])
+            
+            if row_type == "data":
+                record = coldata_to_dict(col_data, keys)
+                if record:  # Only add if we have data
+                    bucket.append(record)
+            elif row_type == "summary":
+                record = coldata_to_dict(col_data, keys)
+                if record:  # Only add if we have data
+                    summary_bucket.append(record)
 
+            # Recursively process nested rows
+            nested_rows = None
             if row.get("Rows"):
-                flatten_rows(row["Rows"].get("Row", []), keys, bucket, summary_bucket)
+                nested_data = row["Rows"]
+                if isinstance(nested_data, dict):
+                    nested_rows = nested_data.get("Row", [])
+                elif isinstance(nested_data, list):
+                    nested_rows = nested_data
             elif row.get("Row"):
-                flatten_rows(row.get("Row", []), keys, bucket, summary_bucket)
+                nested_rows = row.get("Row")
+                
+            if nested_rows:
+                flatten_rows(nested_rows, keys, bucket, summary_bucket)
 
     def resolve_erp_customer(identifier):
         if not identifier:
@@ -238,7 +312,7 @@ def fetch_quickbooks_customer_statement(**kwargs):
         transactions, summaries = [], []
         flatten_rows(report_json.get("Rows", {}).get("Row", []), column_keys, transactions, summaries)
 
-        currency = report_json.get("Header", {}).get("Currency")
+        currency = report_json.get("Header", {}).get("Currency") or "AUD"
 
         def pick(record, *keys):
             for key in keys:
@@ -247,57 +321,99 @@ def fetch_quickbooks_customer_statement(**kwargs):
             return ""
 
         invoices, credit_notes, payments = [], [], []
+        opening_balance = 0.0
 
+        # Process summary rows first to get opening balance
+        for summary in summaries:
+            summary_type = (pick(summary, "col_0", "col_1") or "").lower()
+            balance_value = flt(pick(summary, "balance", "open_balance", "amount", "col_2", "col_3", "col_4"))
+            
+            # Look for opening balance in summary rows
+            if "opening" in summary_type or "beginning" in summary_type:
+                opening_balance = balance_value
+            elif "total" in summary_type and balance_value and opening_balance == 0:
+                # Sometimes opening balance is in a total row
+                opening_balance = balance_value
+
+        # Process transactions
         for txn in transactions:
-            txn_type = (pick(txn, "txn_type", "col_0") or "").lower()
-            doc_num = pick(txn, "doc_num", "docnum", "txn_id")
-            tx_date = pick(txn, "tx_date", "date")
-            due_date = pick(txn, "due_date")
-            memo = pick(txn, "memo", "cust_msg")
-            amount = flt(pick(txn, "subt_amount", "amount", "amount_due", "balance", "open_balance"))
-            balance = flt(pick(txn, "balance", "open_balance", "amount_due", "outstanding_amount"))
+            # Try multiple field name variations for transaction type
+            txn_type_raw = pick(txn, "txn_type", "transaction_type", "type", "col_0", "col_1") or ""
+            txn_type = str(txn_type_raw).lower().strip()
+            
+            # Try multiple field name variations for document number
+            doc_num = pick(txn, "doc_num", "docnum", "txn_id", "num", "col_1", "col_2")
+            
+            # Try multiple field name variations for dates
+            tx_date = pick(txn, "tx_date", "date", "transaction_date", "col_0", "col_1")
+            due_date = pick(txn, "due_date", "due", "col_2", "col_3")
+            
+            memo = pick(txn, "memo", "cust_msg", "description", "col_4", "col_5")
+            
+            # Try multiple field name variations for amounts
+            amount = flt(pick(txn, "subt_amount", "amount", "total_amount", "col_3", "col_4", "col_5"))
+            balance = flt(pick(txn, "balance", "open_balance", "amount_due", "outstanding_amount", "col_4", "col_5", "col_6"))
+            
+            # If amount is 0 but balance has value, use balance
+            if amount == 0 and balance != 0:
+                amount = abs(balance)
+            
+            # Skip if no meaningful data
+            if not doc_num and amount == 0 and balance == 0:
+                continue
 
-            if txn_type in ("invoice", "salesreceipt", "sales_receipt"):
-                outstanding = balance if balance else amount
+            # Determine transaction type more reliably
+            if not txn_type or txn_type == "":
+                # Try to infer from other fields
+                if "invoice" in str(doc_num).lower() or "si-" in str(doc_num).lower():
+                    txn_type = "invoice"
+                elif "credit" in str(doc_num).lower() or "cn-" in str(doc_num).lower():
+                    txn_type = "creditmemo"
+                elif "payment" in str(doc_num).lower() or "pay-" in str(doc_num).lower():
+                    txn_type = "payment"
+
+            if txn_type in ("invoice", "salesreceipt", "sales_receipt", "inv"):
+                outstanding = abs(balance) if balance != 0 else abs(amount)
                 invoices.append({
-                    "invoice_id": doc_num or txn.get("col_1"),
+                    "invoice_id": doc_num or "",
                     "posting_date": tx_date or "",
                     "due_date": due_date or "",
-                    "grand_total": amount,
+                    "grand_total": abs(amount) if amount != 0 else abs(outstanding),
                     "outstanding_amount": outstanding,
                     "status": "Paid" if outstanding == 0 else "Unpaid",
                     "currency": currency,
                     "payment_status": "Paid" if outstanding == 0 else "Unpaid",
                 })
-            elif txn_type in ("creditmemo", "credit_memo", "credit"):
-                remaining_credit = balance if balance else amount
+            elif txn_type in ("creditmemo", "credit_memo", "credit", "credit memo"):
+                remaining_credit = abs(balance) if balance != 0 else abs(amount)
                 credit_notes.append({
-                    "credit_note_no": doc_num or txn.get("col_1"),
+                    "credit_note_no": doc_num or "",
                     "posting_date": tx_date or "",
                     "status": "Closed" if remaining_credit == 0 else "Open",
-                    "total": amount,
+                    "total": abs(amount) if amount != 0 else abs(remaining_credit),
                     "remaining_credit": remaining_credit,
                     "currency": currency,
                 })
-            elif txn_type in ("payment", "receivepayment", "sales_payment"):
+            elif txn_type in ("payment", "receivepayment", "sales_payment", "payment received"):
+                # Payments are typically negative in QuickBooks
+                paid_amount = abs(amount) if amount != 0 else abs(balance)
                 payments.append({
-                    "payment_id": doc_num or txn.get("col_1"),
+                    "payment_id": doc_num or "",
                     "posting_date": tx_date or "",
-                    "paid_amount": amount,
-                    "received_amount": amount,
+                    "paid_amount": paid_amount,
+                    "received_amount": paid_amount,
                     "payment_type": "Receive",
-                    "mode_of_payment": pick(txn, "ship_via"),
+                    "mode_of_payment": pick(txn, "ship_via", "payment_method"),
                     "reference_no": memo,
                 })
 
+        # Calculate totals
         total_invoices = sum(flt(inv["grand_total"]) for inv in invoices)
         total_credit_notes = sum(flt(note["total"]) for note in credit_notes)
         total_payments = sum(flt(pay["paid_amount"]) for pay in payments)
-        closing_balance = (
-            sum(flt(inv["outstanding_amount"]) for inv in invoices)
-            - sum(flt(note["remaining_credit"]) for note in credit_notes)
-            - total_payments
-        )
+        
+        # Calculate closing balance: opening + invoices - credit notes - payments
+        closing_balance = opening_balance + total_invoices - total_credit_notes - total_payments
 
         return {
             "status": "success",
@@ -312,7 +428,7 @@ def fetch_quickbooks_customer_statement(**kwargs):
             "payments": payments,
             "summary": {
                 "currency": currency,
-                "opening_balance": 0.0,
+                "opening_balance": opening_balance,
                 "total_invoices": total_invoices,
                 "total_payments": total_payments * -1,
                 "credit_notes": total_credit_notes * -1,
