@@ -1,11 +1,15 @@
 import json
+import os
+import time
+import hashlib
+from datetime import timedelta
+from urllib.parse import urlencode
+
 import frappe
 import requests
 from frappe import _
-from frappe.utils import now_datetime
-from datetime import timedelta
+from frappe.utils import now_datetime, nowdate, flt
 from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
-from frappe.utils import nowdate
 
 
 @frappe.whitelist(allow_guest=True)
@@ -125,6 +129,397 @@ def refresh_quickbooks_access_token():
     except Exception:
         frappe.log_error(frappe.get_traceback(), "QuickBooks Access Token Refresh Failed")
         frappe.throw(_("Something went wrong while refreshing QuickBooks access token."))
+
+
+
+@frappe.whitelist()
+def fetch_quickbooks_customer_statement(**kwargs):
+    """
+    Fetch the Customer Balance Detail report from QuickBooks and return it in ERP-style format.
+    """
+
+    def normalize_key(raw_key, fallback):
+        key = raw_key or fallback or ""
+        return key.strip().lower().replace(" ", "_").replace("*", "")
+
+    def get_column_keys(report_json):
+        keys = []
+        columns_data = report_json.get("Columns", {})
+        
+        # Handle different column structures
+        if isinstance(columns_data, dict):
+            columns = columns_data.get("Column", [])
+        elif isinstance(columns_data, list):
+            columns = columns_data
+        else:
+            columns = []
+            
+        if not columns:
+            # Fallback: try to infer from header
+            header = report_json.get("Header", {})
+            if header:
+                # Use common column names
+                keys = ["date", "transaction_type", "doc_num", "customer", "due_date", "amount", "balance"]
+        
+        for idx, column in enumerate(columns):
+            if isinstance(column, dict):
+                meta = None
+                metadata = column.get("MetaData", [])
+                if metadata:
+                    for md in metadata:
+                        if isinstance(md, dict) and md.get("Name") == "ColKey":
+                            meta = md.get("Value")
+                            break
+                
+                col_title = column.get("ColTitle") or column.get("title") or ""
+                keys.append(normalize_key(meta, col_title or f"col_{idx}"))
+            else:
+                keys.append(f"col_{idx}")
+                
+        return keys if keys else [f"col_{i}" for i in range(10)]  # Default fallback
+
+    def coldata_to_dict(coldata, keys):
+        record = {}
+        if not coldata:
+            return record
+            
+        for idx, col in enumerate(coldata):
+            if not isinstance(col, dict):
+                continue
+                
+            key = keys[idx] if idx < len(keys) else f"col_{idx}"
+            
+            # Extract value - handle different formats
+            value = col.get("value")
+            if value is None:
+                value = col.get("Value")  # Try capitalized
+            if value is None:
+                value = col.get("text") or col.get("Text")
+            
+            if value not in (None, ""):
+                # Clean up value - remove currency symbols and whitespace
+                if isinstance(value, str):
+                    value = value.strip()
+                record[key] = value
+                
+            # Extract ID if present
+            col_id = col.get("id") or col.get("Id") or col.get("ID")
+            if col_id:
+                record[f"{key}_id"] = col_id
+                
+        return record
+
+    def flatten_rows(row_items, keys, bucket, summary_bucket):
+        if not row_items:
+            return
+            
+        # Handle both list and single row
+        if not isinstance(row_items, list):
+            row_items = [row_items]
+            
+        for row in row_items:
+            if not isinstance(row, dict):
+                continue
+                
+            row_type = row.get("type", "").lower()
+            col_data = row.get("ColData", [])
+            
+            if row_type == "data":
+                record = coldata_to_dict(col_data, keys)
+                if record:  # Only add if we have data
+                    bucket.append(record)
+            elif row_type == "summary":
+                record = coldata_to_dict(col_data, keys)
+                if record:  # Only add if we have data
+                    summary_bucket.append(record)
+
+            # Recursively process nested rows
+            nested_rows = None
+            if row.get("Rows"):
+                nested_data = row["Rows"]
+                if isinstance(nested_data, dict):
+                    nested_rows = nested_data.get("Row", [])
+                elif isinstance(nested_data, list):
+                    nested_rows = nested_data
+            elif row.get("Row"):
+                nested_rows = row.get("Row")
+                
+            if nested_rows:
+                flatten_rows(nested_rows, keys, bucket, summary_bucket)
+
+    def resolve_erp_customer(identifier):
+        if not identifier:
+            return None
+
+        filters = {"custom_quickbooks_customer_id": identifier}
+        doc = frappe.db.get_value("Customer", filters, ["name", "customer_name", "custom_quickbooks_customer_id"], as_dict=True)
+        if doc:
+            return doc
+
+        if frappe.db.exists("Customer", identifier):
+            return frappe.db.get_value("Customer", identifier, ["name", "customer_name", "custom_quickbooks_customer_id"], as_dict=True)
+
+        return None
+
+    def get_contact_details(erp_customer):
+        if not erp_customer:
+            return {"contact_name": None, "phone": None, "email": None, "address": None}
+
+        contact_name = None
+        phone = None
+        email = None
+        address_text = None
+
+        primary_contact = frappe.db.get_value(
+            "Dynamic Link",
+            {
+                "link_doctype": "Customer",
+                "link_name": erp_customer.name,
+                "parenttype": "Contact",
+            },
+            "parent",
+        )
+
+        if primary_contact:
+            contact_doc = frappe.get_doc("Contact", primary_contact)
+            contact_name = contact_doc.first_name or contact_doc.name
+            phone = contact_doc.mobile_no or contact_doc.phone
+            email = contact_doc.email_id
+
+        address_link = frappe.db.get_value(
+            "Dynamic Link",
+            {
+                "link_doctype": "Customer",
+                "link_name": erp_customer.name,
+                "parenttype": "Address",
+            },
+            "parent",
+        )
+
+        if address_link:
+            address_doc = frappe.get_doc("Address", address_link)
+            address_text = ", ".join(filter(None, [address_doc.address_line1, address_doc.city, address_doc.country]))
+
+        return {
+            "contact_name": contact_name,
+            "phone": phone,
+            "email": email,
+            "address": address_text,
+        }
+
+    def build_erp_response(report_json, customer_info, contact_info, start_date, end_date):
+        column_keys = get_column_keys(report_json)
+        transactions, summaries = [], []
+        flatten_rows(report_json.get("Rows", {}).get("Row", []), column_keys, transactions, summaries)
+
+        currency = report_json.get("Header", {}).get("Currency") or "AUD"
+
+        def pick(record, *keys):
+            for key in keys:
+                if key in record and record[key] not in (None, ""):
+                    return record[key]
+            return ""
+
+        invoices, credit_notes, payments = [], [], []
+        opening_balance = 0.0
+
+        # Process summary rows first to get opening balance
+        for summary in summaries:
+            summary_type = (pick(summary, "col_0", "col_1") or "").lower()
+            balance_value = flt(pick(summary, "balance", "open_balance", "amount", "col_2", "col_3", "col_4"))
+            
+            # Look for opening balance in summary rows
+            if "opening" in summary_type or "beginning" in summary_type:
+                opening_balance = balance_value
+            elif "total" in summary_type and balance_value and opening_balance == 0:
+                # Sometimes opening balance is in a total row
+                opening_balance = balance_value
+
+        # Process transactions
+        for txn in transactions:
+            # Try multiple field name variations for transaction type
+            txn_type_raw = pick(txn, "txn_type", "transaction_type", "type", "col_0", "col_1") or ""
+            txn_type = str(txn_type_raw).lower().strip()
+            
+            # Try multiple field name variations for document number
+            doc_num = pick(txn, "doc_num", "docnum", "txn_id", "num", "col_1", "col_2")
+            
+            # Try multiple field name variations for dates
+            tx_date = pick(txn, "tx_date", "date", "transaction_date", "col_0", "col_1")
+            due_date = pick(txn, "due_date", "due", "col_2", "col_3")
+            
+            memo = pick(txn, "memo", "cust_msg", "description", "col_4", "col_5")
+            
+            # Try multiple field name variations for amounts
+            amount = flt(pick(txn, "subt_amount", "amount", "total_amount", "col_3", "col_4", "col_5"))
+            balance = flt(pick(txn, "balance", "open_balance", "amount_due", "outstanding_amount", "col_4", "col_5", "col_6"))
+            
+            # If amount is 0 but balance has value, use balance
+            if amount == 0 and balance != 0:
+                amount = abs(balance)
+            
+            # Skip if no meaningful data
+            if not doc_num and amount == 0 and balance == 0:
+                continue
+
+            # Determine transaction type more reliably
+            if not txn_type or txn_type == "":
+                # Try to infer from other fields
+                if "invoice" in str(doc_num).lower() or "si-" in str(doc_num).lower():
+                    txn_type = "invoice"
+                elif "credit" in str(doc_num).lower() or "cn-" in str(doc_num).lower():
+                    txn_type = "creditmemo"
+                elif "payment" in str(doc_num).lower() or "pay-" in str(doc_num).lower():
+                    txn_type = "payment"
+
+            if txn_type in ("invoice", "salesreceipt", "sales_receipt", "inv"):
+                outstanding = abs(balance) if balance != 0 else abs(amount)
+                invoices.append({
+                    "invoice_id": doc_num or "",
+                    "posting_date": tx_date or "",
+                    "due_date": due_date or "",
+                    "grand_total": abs(amount) if amount != 0 else abs(outstanding),
+                    "outstanding_amount": outstanding,
+                    "status": "Paid" if outstanding == 0 else "Unpaid",
+                    "currency": currency,
+                    "payment_status": "Paid" if outstanding == 0 else "Unpaid",
+                })
+            elif txn_type in ("creditmemo", "credit_memo", "credit", "credit memo"):
+                remaining_credit = abs(balance) if balance != 0 else abs(amount)
+                credit_notes.append({
+                    "credit_note_no": doc_num or "",
+                    "posting_date": tx_date or "",
+                    "status": "Closed" if remaining_credit == 0 else "Open",
+                    "total": abs(amount) if amount != 0 else abs(remaining_credit),
+                    "remaining_credit": remaining_credit,
+                    "currency": currency,
+                })
+            elif txn_type in ("payment", "receivepayment", "sales_payment", "payment received"):
+                # Payments are typically negative in QuickBooks
+                paid_amount = abs(amount) if amount != 0 else abs(balance)
+                payments.append({
+                    "payment_id": doc_num or "",
+                    "posting_date": tx_date or "",
+                    "paid_amount": paid_amount,
+                    "received_amount": paid_amount,
+                    "payment_type": "Receive",
+                    "mode_of_payment": pick(txn, "ship_via", "payment_method"),
+                    "reference_no": memo,
+                })
+
+        # Calculate totals
+        total_invoices = sum(flt(inv["grand_total"]) for inv in invoices)
+        total_credit_notes = sum(flt(note["total"]) for note in credit_notes)
+        total_payments = sum(flt(pay["paid_amount"]) for pay in payments)
+        
+        # Calculate closing balance: opening + invoices - credit notes - payments
+        closing_balance = opening_balance + total_invoices - total_credit_notes - total_payments
+
+        return {
+            "status": "success",
+            "customer": (customer_info.name if customer_info else None),
+            "customer_name": (customer_info.customer_name if customer_info else report_json.get("Header", {}).get("Customer")),
+            "company": frappe.defaults.get_global_default("company"),
+            "from_date": start_date,
+            "to_date": end_date,
+            "contact_details": contact_info,
+            "invoices": invoices,
+            "credit_notes": credit_notes,
+            "payments": payments,
+            "summary": {
+                "currency": currency,
+                "opening_balance": opening_balance,
+                "total_invoices": total_invoices,
+                "total_payments": total_payments * -1,
+                "credit_notes": total_credit_notes * -1,
+                "closing_balance": closing_balance,
+            },
+        }
+
+    try:
+        refresh_quickbooks_access_token()
+    except Exception:
+        frappe.logger().warning("[QuickBooks] Unable to refresh access token, attempting with existing token.")
+
+    settings = frappe.get_single("QuickBooks Settings")
+
+    if not settings.enable:
+        frappe.throw(_("QuickBooks integration is disabled. Please enable it in QuickBooks Settings."))
+
+    access_token = settings.access_token
+    realm_id = settings.quickbooks_company_id
+    base_url = (settings.base_url or "").strip().rstrip("/")
+
+    if not access_token or not realm_id or not base_url:
+        frappe.throw(_("QuickBooks settings are incomplete. Please provide access token, company ID, and base URL."))
+
+    if not base_url.startswith("http"):
+        base_url = f"https://{base_url}"
+
+    allowed_params = [
+        "customer",
+        "shipvia",
+        "term",
+        "end_duedate",
+        "start_duedate",
+        "custom1",
+        "sort_by",
+        "arpaid",
+        "report_date",
+        "sort_order",
+        "aging_method",
+        "department",
+        "columns",
+    ]
+
+    request_params = {}
+    form_dict = frappe._dict(frappe.form_dict or {})
+
+    for param in allowed_params:
+        value = kwargs.get(param, form_dict.get(param))
+        if value in (None, "", []):
+            continue
+        request_params[param] = value
+
+    request_params["minorversion"] = settings.minor_version or "75"
+
+    customer_identifier = request_params.get("customer") or ""
+    start_date = request_params.get("start_duedate")
+    end_date = request_params.get("end_duedate")
+
+    if not customer_identifier:
+        frappe.throw(_("Customer parameter is required to fetch the statement."))
+
+    erp_customer = resolve_erp_customer(customer_identifier)
+    contact_details = get_contact_details(erp_customer)
+
+    query_string = urlencode(request_params, doseq=True)
+    endpoint = f"{base_url}/v3/company/{realm_id}/reports/CustomerBalanceDetail"
+    url = f"{endpoint}?{query_string}" if query_string else endpoint
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        report_json = response.json()
+        return build_erp_response(report_json, erp_customer, contact_details, start_date, end_date)
+    except requests.RequestException as exc:
+        frappe.log_error(
+            message=f"{frappe.get_traceback()}\nURL: {url}\nDetails: {str(exc)}",
+            title="QuickBooks Customer Statement Fetch Failed"
+        )
+        frappe.throw(_("Unable to fetch customer statement from QuickBooks. Please try again later."))
+    except ValueError:
+        frappe.log_error(
+            message=f"{frappe.get_traceback()}\nURL: {url}\nDetails: Non-JSON response",
+            title="QuickBooks Customer Statement Invalid Response"
+        )
+        frappe.throw(_("QuickBooks returned an invalid response for the customer statement request."))
 
 
 
@@ -1347,3 +1742,260 @@ def sync_debit_note_to_quickbooks(invoice):
         return {"id": qb_credit_id}
     else:
         frappe.throw(f"Vendor Credit sync failed. Response: {response.text}")
+
+
+@frappe.whitelist()
+def start_item_images_sync_background():
+    """Enqueue item images sync job to run in background."""
+    refresh_quickbooks_access_token()
+
+    settings = frappe.get_doc("QuickBooks Settings")
+    if not settings.enable:
+        frappe.msgprint(
+            'Navigate to Quickbooks Settings & Please enable QuickBooks Integration to continue',
+            title="QuickBooks Integration Disabled",
+            indicator="red"
+        )
+        return
+
+    frappe.enqueue(sync_quickbooks_item_images, queue='long', timeout=1800)  # 30 minutes timeout
+    frappe.msgprint("Item images sync from QuickBooks has been started in the background.")
+
+
+@frappe.whitelist(allow_guest = True)
+def sync_quickbooks_item_images():
+    """
+    Fetch item attachments (images) from QuickBooks Online and store them in ERPNext File doctype.
+    The attachment must already exist in QBO as an Attachable linked to an Item.
+    Supports pagination to fetch all images.
+
+    Mapping:
+       QBO Item.Id  -->  ERP Item.custom_quickbooks_item_id
+       QBO Attachable.Download URL --> ERPNext File saved + Linked to Item
+    """
+    frappe.logger().info("[QB SYNC] Started item images sync job")
+
+    # --- Refresh Token First ---
+    refresh_quickbooks_access_token()
+
+    settings = frappe.get_single("QuickBooks Settings")
+    access_token = settings.access_token
+    realm_id = settings.quickbooks_company_id
+    base_url = settings.base_url.rstrip("/")
+    minor_version = settings.minor_version or "75"
+
+    if not access_token or not realm_id:
+        frappe.log_error("Missing QuickBooks access token or company ID", "QuickBooks Item Images Sync Failed")
+        return
+
+    imported = []
+    skipped = []
+    start_position = 1
+    max_results = 50  # Smaller batches to avoid timeouts
+
+    # -----------------------------------------------------------------------------------
+    # FETCH ALL ATTACHABLES WITH PAGINATION
+    # -----------------------------------------------------------------------------------
+    while True:
+        # Query attachables linked to Items with pagination
+        query = f"SELECT * FROM Attachable WHERE AttachableRef.EntityRef.type = 'Item' STARTPOSITION {start_position} MAXRESULTS {max_results}"
+        url = f"{base_url}/v3/company/{realm_id}/query?query={query.replace(' ', '%20')}&minorversion={minor_version}"
+
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json"
+        }
+
+        try:
+            res = requests.get(url, headers=headers, timeout=60)
+            res.raise_for_status()
+            data = res.json()
+        except requests.exceptions.Timeout:
+            frappe.log_error(f"QBO Item Image Fetch Timeout at position {start_position}", "QuickBooks Item Images Sync Timeout")
+            # Retry once
+            try:
+                res = requests.get(url, headers=headers, timeout=120)
+                res.raise_for_status()
+                data = res.json()
+            except Exception as e:
+                frappe.log_error(f"QBO Item Image Fetch Retry Failed: {str(e)}", "QuickBooks Item Images Sync Failed")
+                break
+        except Exception as e:
+            frappe.log_error(f"QBO Item Image Fetch Failed: {str(e)}", "QuickBooks Item Images Sync Failed")
+            break
+
+        attachables = data.get("QueryResponse", {}).get("Attachable", [])
+        if not attachables:
+            break  # No more attachables
+
+        frappe.logger().info(f"[QB SYNC] Fetched {len(attachables)} attachables starting from {start_position}.")
+
+        # -----------------------------------------------------------------------------------
+        # PROCESS EACH ATTACHABLE
+        # -----------------------------------------------------------------------------------
+        for attach in attachables:
+            try:
+                file_name = attach.get("FileName")
+                content_type = attach.get("ContentType")
+                attach_id = attach.get("Id")
+
+                if not file_name or not attach_id:
+                    skipped.append({"id": attach_id or "unknown", "reason": "missing filename or id"})
+                    continue
+
+                # Validate metadata
+                refs = attach.get("AttachableRef", [])
+                if not refs:
+                    skipped.append({"id": attach_id, "reason": "no refs"})
+                    continue
+
+                ref = refs[0] if isinstance(refs, list) else refs
+                entity_ref = ref.get("EntityRef", {}) if isinstance(ref, dict) else {}
+                
+                if entity_ref.get("type") != "Item":
+                    skipped.append({"id": attach_id, "reason": "not item"})
+                    continue
+
+                qbo_item_id = entity_ref.get("value")
+                if not qbo_item_id:
+                    skipped.append({"id": attach_id, "reason": "no item id"})
+                    continue
+
+                # Lookup ERPNext Item by QuickBooks Item ID
+                erp_item_name = frappe.db.get_value(
+                    "Item",
+                    {"custom_quickbooks_item_id": qbo_item_id},
+                    "name"
+                )
+
+                if not erp_item_name:
+                    skipped.append({"id": attach_id, "reason": f"ERPNext item not found for QBO ID {qbo_item_id}"})
+                    continue
+
+                # Check if file already exists for this item
+                existing_file = frappe.db.exists(
+                    "File",
+                    {
+                        "file_name": file_name,
+                        "attached_to_doctype": "Item",
+                        "attached_to_name": erp_item_name
+                    }
+                )
+                if existing_file:
+                    skipped.append({"id": attach_id, "reason": "file already exists"})
+                    continue
+
+                # -----------------------------------------------------------------------------------
+                # DOWNLOAD THE FILE FROM QUICKBOOKS
+                # -----------------------------------------------------------------------------------
+                download_url = f"{base_url}/v3/company/{realm_id}/download/{attach_id}"
+
+                try:
+                    # Use longer timeout for file downloads (images can be large)
+                    file_res = requests.get(
+                        download_url,
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        timeout=120,  # 2 minutes for large images
+                        stream=True  # Stream download for better memory handling
+                    )
+                    file_res.raise_for_status()
+                    # Read content after successful response
+                    file_content = file_res.content
+                except requests.exceptions.Timeout:
+                    skipped.append({"id": attach_id, "reason": "download timeout"})
+                    frappe.logger().warn(f"[QB SYNC] Timeout downloading image {file_name} (ID: {attach_id})")
+                    continue
+                except Exception as e:
+                    skipped.append({"id": attach_id, "reason": f"download failed: {str(e)}"})
+                    continue
+
+                # -----------------------------------------------------------------------------------
+                # SAVE FILE TO ERPNext PROPERLY
+                # -----------------------------------------------------------------------------------
+                try:
+                    # Sanitize file name
+                    safe_file_name = file_name.replace(" ", "_").replace("/", "_")
+                    
+                    # Get file path using frappe's utility
+                    file_path = frappe.utils.get_files_path(safe_file_name, is_private=0)
+                    
+                    # Ensure directory exists
+                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                    
+                    # Write file content to disk
+                    with open(file_path, "wb") as f:
+                        f.write(file_content)
+                    
+                    # Calculate file size and hash (use content already in memory)
+                    file_size = len(file_content)
+                    content_hash = hashlib.md5(file_content).hexdigest()
+                    
+                    # Create File document with proper fields
+                    file_doc = frappe.get_doc({
+                        "doctype": "File",
+                        "file_name": safe_file_name,
+                        "file_url": f"/files/{safe_file_name}",
+                        "is_private": 0,
+                        "file_size": file_size,
+                        "content_hash": content_hash,
+                        "attached_to_doctype": "Item",
+                        "attached_to_name": erp_item_name
+                    })
+                    file_doc.insert(ignore_permissions=True)
+                    
+                    # Update item's image field if it's an image and item doesn't have one
+                    if content_type and content_type.startswith("image/"):
+                        item_doc = frappe.get_doc("Item", erp_item_name)
+                        if not item_doc.image:
+                            item_doc.image = file_doc.file_url
+                            item_doc.save(ignore_permissions=True)
+                    
+                    # Commit after each file to avoid long transactions
+                    frappe.db.commit()
+
+                    imported.append({
+                        "item": erp_item_name,
+                        "filename": safe_file_name,
+                        "qbo_attach_id": attach_id
+                    })
+                    
+                    frappe.logger().info(f"[QB SYNC] Imported image {safe_file_name} for item {erp_item_name}")
+                    
+                    # Small delay to avoid overwhelming the system
+                    time.sleep(0.1)
+
+                except Exception as e:
+                    frappe.log_error(
+                        f"File save failed for {file_name}: {str(e)}\n{frappe.get_traceback()}",
+                        "QuickBooks Item Image Save Failed"
+                    )
+                    skipped.append({"id": attach_id, "reason": f"file save failed: {str(e)}"})
+
+            except Exception as e:
+                frappe.log_error(
+                    f"Error processing attachable {attach.get('Id', 'unknown')}: {str(e)}",
+                    "QuickBooks Item Image Processing Error"
+                )
+                skipped.append({"id": attach.get("Id", "unknown"), "reason": f"processing error: {str(e)}"})
+
+        # Check if we need to fetch more
+        if len(attachables) < max_results:
+            break  # Last page reached
+
+        start_position += max_results
+
+    # -----------------------------------------------------------------------------------
+    # SUMMARY OUTPUT
+    # -----------------------------------------------------------------------------------
+    frappe.logger().info(
+        f"[QB SYNC] Completed item images sync job. Imported: {len(imported)}, Skipped: {len(skipped)}"
+    )
+    frappe.db.commit()
+
+    return {
+        "message": f"Item image sync completed. Imported: {len(imported)}, Skipped: {len(skipped)}",
+        "imported_count": len(imported),
+        "skipped_count": len(skipped),
+        "imported": imported[:10],  # Return first 10 for display
+        "skipped": skipped[:10]  # Return first 10 for display
+    }

@@ -151,23 +151,13 @@ doctype_js = {
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
-# 	"all": [
-# 		"quickbooks_integration.tasks.all"
-# 	],
-# 	"daily": [
-# 		"quickbooks_integration.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"quickbooks_integration.tasks.hourly"
-# 	],
-# 	"weekly": [
-# 		"quickbooks_integration.tasks.weekly"
-# 	],
-# 	"monthly": [
-# 		"quickbooks_integration.tasks.monthly"
-# 	],
-# }
+scheduler_events = {
+	"cron": {
+		"0 */12 * * *": [
+			"quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_stock_from_quickbooks"
+		]
+	}
+}
 
 # Testing
 # -------
