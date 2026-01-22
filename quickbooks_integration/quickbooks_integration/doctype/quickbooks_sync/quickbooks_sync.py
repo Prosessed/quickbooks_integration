@@ -4,11 +4,12 @@
 # import frappe
 import json
 import re
+from datetime import timedelta
 from frappe.model.document import Document
 import requests
 import frappe
-from frappe.utils import nowdate
-from quickbooks_integration.api import refresh_quickbooks_access_token, sync_credit_memo_to_quickbooks, sync_selected_sales_invoices,sync_single_purchase_invoice_to_quickbooks
+from frappe.utils import now
+from quickbooks_integration.api import refresh_quickbooks_access_token, sync_credit_memo_to_quickbooks, sync_selected_sales_invoices, sync_single_purchase_invoice_to_quickbooks, sync_single_sales_invoice
 from frappe import _
 class QuickBooksSync(Document):
 	pass
@@ -190,75 +191,422 @@ def enqueue_sync_credit_note_to_quickbooks(doc, method):
     frappe.msgprint("Credit Note synchronization with QuickBooks has started.", indicator="green")
     frappe.enqueue(sync_credit_memo_to_quickbooks, queue='long', docname=doc.name)
 
+
+@frappe.whitelist(allow_guest=True)
+def handle_sales_order_submit(doc, method):
+    """
+    Hook handler for Sales Order on_submit.
+    Validates QuickBooks Settings and enqueues background sync job.
+    """
+    try:
+        # Get QuickBooks Settings
+        settings = frappe.get_single("QuickBooks Settings")
+        
+        # Validation: Check if QuickBooks is enabled
+        if not settings.enable:
+            return  # Skip silently if QuickBooks is disabled
+        
+        # Validation: Check if Order Sync is allowed
+        if not settings.allow_order_sync:
+            return  # Skip silently if Order Sync is disabled
+        
+        # Validation: Skip if already synced
+        if doc.get("quickbooks_sales_order_id"):
+            frappe.logger().info(f"[QBO] Sales Order {doc.name} already has QuickBooks ID. Skipping sync.")
+            return
+        
+        # Enqueue background job
+        frappe.enqueue(
+            method=sync_sales_order_to_quickbooks,
+            queue='long',
+            docname=doc.name,
+            enqueue_after_commit=True
+        )
+        
+        frappe.msgprint("Sales Order synchronization with QuickBooks has started.", indicator="green")
+        frappe.logger().info(f"[QBO] Enqueued Sales Order {doc.name} for QuickBooks sync")
+        
+    except Exception as e:
+        # Log error but don't block Sales Order submission
+        frappe.log_error(
+            f"Error in handle_sales_order_submit for {doc.name}: {str(e)}\n{frappe.get_traceback()}",
+            "QuickBooks Sales Order Hook Error"
+        )
+
+
+@frappe.whitelist()
+def sync_sales_order_to_quickbooks(docname=None):
+    """Sync a single Sales Order to QuickBooks with global invoice-level discount %"""
+    import requests, json
+    from frappe.utils import flt
+    
+    try:
+        # Log start of sync process
+        frappe.log_error(
+            title="QBO Sync Started",
+            message=f"Starting sync for Sales Order: {docname}"
+        )
+        
+        doc = frappe.get_doc("Sales Order", docname)
+        if doc.docstatus == 2:
+            frappe.msgprint("Cancelled Sales Orders are not allowed to sync")
+            frappe.log_error(
+                title="QBO Sync Blocked - Cancelled Sales Order",
+                message=f"Sales Order {docname} is cancelled (docstatus=2)"
+            )
+            return {"error": "Cancelled sales order cannot be synced."}
+
+        refresh_quickbooks_access_token()
+        settings = frappe.get_doc("QuickBooks Settings")
+        if not settings.enable:
+            frappe.msgprint("Please Enable QuickBooks Settings")
+            frappe.log_error(
+                title="QBO Sync Blocked - Settings Disabled",
+                message=f"QuickBooks Settings is disabled for Sales Order: {docname}"
+            )
+            return {"error": "QuickBooks not enabled."}
+
+        # ---- QuickBooks endpoint ----
+        url = f"{settings.base_url.strip().rstrip('/')}/v3/company/{settings.quickbooks_company_id}/estimate?minorversion={settings.minor_version or '75'}"
+        headers = {
+            "Authorization": f"Bearer {settings.access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        
+        frappe.log_error(
+            title="QBO Sync - API Configuration",
+            message=f"Sales Order: {docname}\nURL: {url}\nMinor Version: {settings.minor_version or '75'}"
+        )
+
+        # ---- Customer ----
+        customer = frappe.get_doc("Customer", doc.customer)
+        qb_customer_id = customer.get("custom_quickbooks_customer_id") or "1"
+        send_item = (settings.send_item) == 1
+        
+        frappe.log_error(
+            title="QBO Sync - Customer Info",
+            message=f"Sales Order: {docname}\nCustomer: {doc.customer}\nQB Customer ID: {qb_customer_id}\nSend Item: {send_item}"
+        )
+
+        # ---- Helper: get tax code ----
+        def get_tax_code(item):
+            tax_template = item.item_tax_template
+            if not tax_template:
+                # Try to fetch from Item master
+                tax_template = frappe.db.get_value("Item", item.item_code, "item_tax_template")
+            
+            if not tax_template:
+                return "5"
+            try:
+                tax_code = frappe.get_doc("Item Tax Template", tax_template).custom_quickbooks_gst_id or "5"
+                frappe.log_error(
+                    title="QBO Sync - Tax Code Retrieved",
+                    message=f"Item: {item.item_code}\nTax Template: {tax_template}\nTax Code: {tax_code}"
+                )
+                return tax_code
+            except Exception as e:
+                frappe.log_error(
+                    title="QBO Sync - Tax Code Error",
+                    message=f"Error fetching GST from {tax_template}\nItem: {item.item_code}\nError: {str(e)}"
+                )
+                return "5"
+
+        # ---- Prepare line items ----
+        line_items = []
+        subtotal = 0.0
+        tax_code_weights = {}  # Track amount per tax code to find dominant one
+        
+        frappe.log_error(
+            title="QBO Sync - Sales Order Amounts",
+            message=f"Sales Order: {docname}\n" +
+                    f"Total (doc.total): {doc.total}\n" +
+                    f"Net Total (doc.net_total): {doc.net_total}\n" +
+                    f"Grand Total (doc.grand_total): {doc.grand_total}\n" +
+                    f"Discount Amount (doc.discount_amount): {getattr(doc, 'discount_amount', 0)}\n" +
+                    f"Additional Discount %: {getattr(doc, 'additional_discount_percentage', 0)}"
+        )
+        
+        for idx, item in enumerate(doc.items, 1):
+            amount = float(item.amount or 0)
+            subtotal += amount
+            
+            # Retrieve tax code once
+            item_tax_code = get_tax_code(item)
+            
+            # Track weight (accumulate amount per tax code)
+            tax_code_weights[item_tax_code] = tax_code_weights.get(item_tax_code, 0.0) + amount
+
+            detail = {
+                "Qty": item.qty,
+                "UnitPrice": float(item.rate or 0),
+                "TaxCodeRef": {"value": item_tax_code}
+            }
+            
+            if send_item:
+                qb_item_id = frappe.db.get_value("Item", item.item_code, "custom_quickbooks_item_id")
+                if qb_item_id:
+                    detail["ItemRef"] = {"value": qb_item_id, "name": item.item_name}
+                    frappe.log_error(
+                        title=f"QBO Sync - Line Item {idx} with QBO Item",
+                        message=f"Sales Order: {docname}\nItem: {item.item_code}\nQB Item ID: {qb_item_id}\nQty: {item.qty}\nRate: {item.rate}\nAmount: {amount}"
+                    )
+                else:
+                    frappe.log_error(
+                        title=f"QBO Sync - Line Item {idx} without QBO Item",
+                        message=f"Sales Order: {docname}\nItem: {item.item_code}\nNo QB Item ID found\nQty: {item.qty}\nRate: {item.rate}\nAmount: {amount}"
+                    )
+
+            line_items.append({
+                "DetailType": "SalesItemLineDetail",
+                "Amount": amount,
+                "Description": item.description or item.item_name,
+                "SalesItemLineDetail": detail
+            })
+        
+        frappe.log_error(
+            title="QBO Sync - Line Items Summary",
+            message=f"Sales Order: {docname}\nTotal Line Items: {len(line_items)}\nSubtotal: {subtotal}"
+        )
+
+        # ---- Global invoice-level discount ----
+        # In ERPNext, discount_amount is the value of the discount.
+        # additional_discount_percentage is the % value.
+        discount_amount = flt(doc.get("discount_amount"))
+        additional_discount_percentage = flt(doc.get("additional_discount_percentage"))
+        
+        frappe.log_error(
+            title="QBO DEBUG - Raw Discount Values",
+            message=f"Doc: {docname}\ndiscount_amount: {discount_amount}\nadditional_discount_percentage: {additional_discount_percentage}\nsubtotal: {subtotal}"
+        )
+
+        # Force calculation if percentage exists, to ensure we have a value
+        if additional_discount_percentage > 0:
+            calculated_discount = round(subtotal * (additional_discount_percentage / 100.0), 2)
+            # Use calculated if doc.discount_amount is 0 or vastly different? 
+            # Let's prefer the calculated one if discount_amount is 0
+            if discount_amount == 0:
+                discount_amount = calculated_discount
+                frappe.log_error(title="QBO DEBUG - Using Calculated Discount", message=f"Calculated: {discount_amount}")
+
+        frappe.log_error(
+            title="QBO DEBUG - Final Discount to Send",
+            message=f"Discount Amount: {discount_amount}"
+        )
+        
+        if discount_amount > 0:
+            # STRATEGY: Send fixed amount (no percentage)
+            
+            # Determine dominant tax code (Tax code with highest total amount)
+            # Default to "5" (GST) if no items or something fails
+            discount_tax_code = "5"
+            if tax_code_weights:
+                try:
+                    # Find key with max value
+                    discount_tax_code = max(tax_code_weights, key=tax_code_weights.get)
+                    frappe.log_error(title="QBO DEBUG - Dominant Tax Code Found", message=f"Selected Tax Code: {discount_tax_code} based on weights: {json.dumps(tax_code_weights)}")
+                except Exception as e:
+                    frappe.log_error(title="QBO DEBUG - Tax Code Selection Error", message=str(e))
+                    # Fallback to first item logic if weight calculation fails (shouldn't happen)
+                    if len(line_items) > 0 and "SalesItemLineDetail" in line_items[0]:
+                        try:
+                            discount_tax_code = line_items[0]["SalesItemLineDetail"]["TaxCodeRef"]["value"]
+                        except:
+                            pass
+
+            frappe.log_error(
+                title="QBO DEBUG - Discount Tax Code",
+                message=f"Using Tax Code: {discount_tax_code}"
+            )
+
+            # Strictly match the manual working payload
+            # Removed DiscountAccountRef as it was not in the working manual payload
+            discount_line = {
+               "DetailType": "DiscountLineDetail",
+               "Amount": discount_amount,
+               "DiscountLineDetail": {
+                   "PercentBased": False,
+                   "TaxCodeRef": {"value": discount_tax_code}
+               }
+            }
+            
+            line_items.append(discount_line)
+            
+            frappe.log_error(
+                title="QBO DEBUG - Discount Payload",
+                message=f"Payload Line:\n{json.dumps(discount_line, indent=2)}"
+            )
+        else:
+            frappe.log_error(
+                title="QBO Sync - No Discount",
+                message=f"Sales Order: {docname}\nNo additional discount percentage found"
+            )
+
+        # ---- Build payload ----
+        apply_discount_on = doc.get("apply_discount_on") or "Grand Total" # Default to Grand Total if not set
+        
+        # Determine QBO behavior based on ERPNext discount setting
+        if apply_discount_on == "Net Total":
+            # Discount applied BEFORE tax
+            apply_tax_after_discount = True 
+            # Discount line needs a TAXABLE code so it reduces the tax basis
+            # We already calculated 'discount_tax_code' (dominant tax code) above for this purpose
+        else:
+            # "Grand Total" -> Discount applied AFTER tax
+            apply_tax_after_discount = False
+            # Discount line needs a NON-TAXABLE code so it doesn't reduce the calculated tax
+            # We force it to "Non-Taxable" (usually ID "4" or "NON" in standard QBO AU/Global)
+            # You might need to adjust "4" if your specific QBO Non-Taxable code is different.
+            # Assuming '4' based on your earlier payload which had "TaxCodeRef": {"value": "4"} for a line item.
+            discount_tax_code = "4" # Or "NON" or whatever is "Tax Free" in your system
+            
+            frappe.log_error(
+                title="QBO Sync - Discount Logic",
+                message=f"Apply Discount On: {apply_discount_on} -> Setting ApplyTaxAfterDiscount=False, TaxCode=Non-Taxable({discount_tax_code})"
+            )
+
+            # Update the discount line we appended earlier if we need to change the tax code
+            if len(line_items) > 0 and line_items[-1].get("DetailType") == "DiscountLineDetail":
+                 line_items[-1]["DiscountLineDetail"]["TaxCodeRef"]["value"] = discount_tax_code
+
+
+        payload = {
+            "DocNumber": doc.name,
+            "TxnDate": str(doc.transaction_date),
+            "CustomerRef": {"value": qb_customer_id, "name": doc.customer},
+            "Line": line_items,
+            "ApplyTaxAfterDiscount": apply_tax_after_discount,
+            "CustomerMemo": {"value": "Generated from ERPNext"},
+            "PrintStatus": "NeedToPrint",
+            "EmailStatus": "NotSet"
+        }
+        
+        # Remove GlobalTaxCalculation to let QBO use defaults/customer settings
+        # This matches the working manual payload
+        
+        frappe.log_error(
+            title="QBO Sync - Final Payload",
+            message=f"Sales Order: {docname}\nPayload:\n{json.dumps(payload, indent=2)}"
+        )
+
+        # ---- Send request ----
+        frappe.log_error(
+            title="QBO Sync - Sending Request",
+            message=f"Sales Order: {docname}\nSending POST request to QuickBooks..."
+        )
+        
+        res = requests.post(url, headers=headers, data=json.dumps(payload))
+        
+        # ---- Log full request + response for debugging ----
+        frappe.log_error(
+            title="QBO Estimate Request + Response",
+            message=(
+                f"Sales Order: {docname}\n\n"
+                f"REQUEST PAYLOAD:\n{json.dumps(payload, indent=2, default=str)}\n\n"
+                f"STATUS CODE: {res.status_code}\n\n"
+                f"RESPONSE BODY:\n{res.text}"
+            )
+        )
+        
+        frappe.log_error(
+            title="QBO Sync - Response Received",
+            message=f"Sales Order: {docname}\nStatus Code: {res.status_code}\nResponse Headers: {dict(res.headers)}\nResponse Text (first 2000 chars): {res.text[:2000]}"
+        )
+        
+        body = res.json() if res.text else {}
+
+        if res.status_code in (200, 201):
+            if body.get("Estimate"):
+                qbo_id = body["Estimate"]["Id"]
+                
+                # Log the discount details from QB response
+                qb_lines = body["Estimate"].get("Line", [])
+                discount_lines = [l for l in qb_lines if l.get("DetailType") == "DiscountLineDetail"]
+                
+                frappe.log_error(
+                    title="QBO Sync - QB Response Analysis",
+                    message=f"Sales Order: {docname}\n" +
+                            f"QB Estimate ID: {qbo_id}\n" +
+                            f"QB Total: {body['Estimate'].get('TotalAmt')}\n" +
+                            f"Discount Lines Found: {len(discount_lines)}\n" +
+                            f"Discount Line Details: {json.dumps(discount_lines, indent=2)}"
+                )
+                
+                doc.db_set("quickbooks_sales_order_id", qbo_id)
+                frappe.db.commit()
+
+                frappe.log_error(
+                    title="QBO Sync - SUCCESS",
+                    message=f"Sales Order: {docname}\nQBO Estimate ID: {qbo_id}\nFull Response: {json.dumps(body, indent=2)}"
+                )
+                
+                frappe.msgprint(f"Successfully synced to QuickBooks! QBO Estimate ID: {qbo_id}")
+                return {"id": qbo_id, "response": body}
+            else:
+                frappe.log_error(
+                    title="QBO Sync - Unexpected Response Format",
+                    message=f"Sales Order: {docname}\nStatus: {res.status_code}\nResponse missing 'Estimate' key\nFull Response: {json.dumps(body, indent=2)}"
+                )
+                return {"error": "Unexpected response format", "response": body}
+        else:
+            # Extract detailed error information
+            fault = body.get("Fault", {})
+            errors = fault.get("Error", [])
+            error_messages = []
+            
+            for error in errors:
+                error_messages.append(f"Code: {error.get('code')}, Message: {error.get('Message')}, Detail: {error.get('Detail')}")
+            
+            frappe.log_error(
+                title="QBO Sync - FAILED",
+                message=f"Sales Order: {docname}\n" +
+                        f"Status Code: {res.status_code}\n" +
+                        f"Errors: {'; '.join(error_messages)}\n" +
+                        f"Full Response: {json.dumps(body, indent=2)}\n" +
+                        f"Request Payload: {json.dumps(payload, indent=2)}"
+            )
+            
+            error_msg = error_messages[0] if error_messages else "Unknown error"
+            frappe.msgprint(f"QuickBooks sync failed: {error_msg}")
+            return {"error": f"Sync failed ({res.status_code})", "details": error_messages, "response": body}
+
+    except Exception as e:
+        import traceback
+        frappe.log_error(
+            title="QBO Sync - EXCEPTION",
+            message=f"Sales Order: {docname}\n" +
+                    f"Exception Type: {type(e).__name__}\n" +
+                    f"Error: {str(e)}\n" +
+                    f"Full Traceback:\n{traceback.format_exc()}"
+        )
+        frappe.msgprint(f"Error during sync: {str(e)}")
+        return {"error": str(e), "traceback": traceback.format_exc()}
+
 @frappe.whitelist()
 def sync_invoice_to_quickbooks(docname=None):
-    doc = frappe.get_doc("Sales Invoice", docname)
-    refresh_quickbooks_access_token()
-
-    settings = frappe.get_doc("QuickBooks Settings")
-    url = f"{settings.base_url.strip().rstrip('/')}/v3/company/{settings.quickbooks_company_id}/invoice?minorversion={settings.minor_version or '75'}"
-    headers = {
-        "Authorization": f"Bearer {settings.access_token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-
-    customer = frappe.get_doc("Customer", doc.customer)
-    qb_customer_id = customer.get("custom_quickbooks_customer_id") or "1"
-    send_item = (settings.send_item) == 1
-
-    def get_tax_code(item):
-        if not item.item_tax_template:
-            return "5"
-        try:
-            return frappe.get_doc("Item Tax Template", item.item_tax_template).custom_quickbooks_gst_id or "5"
-        except Exception as e:
-            frappe.log_error(f"Error fetching GST from {item.item_tax_template}", str(e))
-            return "5"
-
-    line_items = []
-    for item in doc.items:
-        detail = {
-            "Qty": item.qty,
-            "UnitPrice": float(item.rate),
-            "TaxCodeRef": {"value": get_tax_code(item)}
-        }
-        if send_item:
-            qb_item_id = frappe.db.get_value("Item", item.item_code, "custom_quickbooks_item_id")
-            if qb_item_id:
-                detail["ItemRef"] = {"value": qb_item_id, "name": item.item_name}
-
-        line_items.append({
-            "DetailType": "SalesItemLineDetail",
-            "Amount": float(item.amount),
-            "Description": item.description or item.item_name,
-            "SalesItemLineDetail": detail
-        })
-
-    payload = {
-        "TxnDate": str(doc.posting_date),
-        "DocNumber": doc.name,
-        "CustomerRef": {"value": qb_customer_id, "name": doc.customer},
-        "Line": line_items,
-        "ApplyTaxAfterDiscount": False,
-        "CustomerMemo": {"value": "Generated from ERPNext"},
-        "PrintStatus": "NeedToPrint",
-        "EmailStatus": "NotSet"
-    }
-
+    """
+    Sync Sales Invoice to QuickBooks.
+    This wrapper calls the main logic in api.py (sync_single_sales_invoice)
+    to avoid duplication and ensure consistent discount handling.
+    """
     try:
-        res = requests.post(url, headers=headers, data=json.dumps(payload))
-
-        if res.status_code == 200 and (qbo_id := res.json().get("Invoice", {}).get("Id")):
-            doc.db_set("custom_quickbooks_invoice_id", qbo_id)
-            frappe.logger().info(f"[QBO] Sales Invoice {doc.name} synced as QBO Invoice {qbo_id}")
-
-        else:
-            frappe.log_error("QuickBooks Invoice Sync Failed", f"Sales Invoice: {doc.name}\nStatus: {res.status_code}\nResponse: {res.text}")
+        frappe.log_error(f"Syncing Invoice {docname} via sync_invoice_to_quickbooks wrapper")
+        
+        # Call the centralized function in api.py
+        result = sync_single_sales_invoice(docname)
+        
+        # The API function returns a dict. 
+        # If successful, it has "id" and "response".
+        # If failed, it has "error".
+        
+        if result and result.get("id"):
+            frappe.logger().info(f"[QBO] Successfully synced {docname} via wrapper. QBO ID: {result.get('id')}")
+        elif result and result.get("error"):
+             frappe.log_error(f"Sync failed for {docname}: {result.get('error')}", "QuickBooks Sync Wrapper Error")
+        
     except Exception as e:
-        frappe.log_error("QuickBooks Invoice Sync Error", f"Sales Invoice: {doc.name}\nError: {str(e)}")
-
-    frappe.db.commit()
+        frappe.log_error(f"Wrapper Exception for {docname}: {str(e)}", "QuickBooks Sync Wrapper Exception")
+        raise e
 
 
 
@@ -371,10 +719,7 @@ def create_or_update_customer(qb_customer):
         try:
             map_customer_contact(customer.name, qb_customer)
         except Exception:
-            frappe.log_error(
-                message=frappe.get_traceback(),
-                title=f"QuickBooks Customer Contact Sync Failed (QB ID: {qb_id})"
-            )
+            
             frappe.logger().error(f"[QB SYNC] Contact sync failed for customer {display_name} (QB ID: {qb_id})")
 
 
@@ -513,145 +858,362 @@ def map_customer_contact(customer_name, qb_customer):
 
     contact.save(ignore_permissions=True)
 
+
+
 @frappe.whitelist()
 def start_item_background():
+    """Start QuickBooks → ERPNext item sync in background"""
     refresh_quickbooks_access_token()
 
-    """Enqueue item sync job to run in background."""
-
     settings = frappe.get_doc("QuickBooks Settings")
-    if settings.allow_item_sync_from_quickbooks != 1 and not settings.enable:
-        frappe.frappe.msgprint('Navigate to Quickbooks Settings & Please enable Item sync to continue', title="QuickBooks Item Sync Disabled",
-                                indicator="red",
-                            )
+    if not settings.enable or not settings.allow_item_sync_from_quickbooks:
+        frappe.msgprint(
+            "Navigate to QuickBooks Settings and enable Item Sync.",
+            title="QuickBooks Item Sync Disabled",
+            indicator="red",
+        )
         return
 
-    frappe.enqueue(item_sync, queue='long', timeout=300)
-    frappe.msgprint("Item sync from QuickBooks has been started in the background.")
+    frappe.enqueue(item_sync, queue="long", timeout=600)
+    frappe.msgprint("Item sync from QuickBooks has started in the background.")
 
-@frappe.whitelist()
+
 def item_sync():
-    """Sync items from QuickBooks to ERPNext with pagination support."""
+    """Sync items from QuickBooks to ERPNext with pagination"""
     settings = frappe.get_doc("QuickBooks Settings")
-    access_token = settings.access_token
+
+    headers = {
+        "Authorization": f"Bearer {settings.access_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+
+    base_url = settings.base_url.rstrip("/")
     company_id = settings.quickbooks_company_id
-    base_url = settings.base_url.strip().rstrip("/")
     minor_version = settings.minor_version or "75"
 
     start_position = 1
-    max_results = 100  # QuickBooks allows max 100 per page
+    max_results = 100
+    total_fetched = 0
+    total_synced = 0
+    total_skipped = 0
+    total_errors = 0
 
     while True:
         query = f"SELECT * FROM Item STARTPOSITION {start_position} MAXRESULTS {max_results}"
-        url = f"{base_url}/v3/company/{company_id}/query?query={query.replace(' ', '%20')}&minorversion={minor_version}"
+        url = f"{base_url}/v3/company/{company_id}/query"
 
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
+        response = requests.get(
+            url,
+            headers=headers,
+            params={"query": query, "minorversion": minor_version},
+        )
+        response.raise_for_status()
 
-        try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
-
-            items = data.get("QueryResponse", {}).get("Item", [])
-            if not items:
-                break  # No more items to fetch
-
-            for qb_item in items:
-                create_or_update_item(qb_item)
-
-            frappe.logger().info(f"[QB SYNC] Fetched {len(items)} items starting from {start_position}.")
-
-            if len(items) < max_results:
-                break  # Last page reached
-
-            start_position += max_results
-
-        except Exception as e:
-            frappe.log_error(message=str(e), title="QuickBooks Item Sync Failed")
+        items = response.json().get("QueryResponse", {}).get("Item", [])
+        if not items:
             break
 
+        # Handle single item response (QuickBooks sometimes returns dict instead of list)
+        if isinstance(items, dict):
+            items = [items]
 
-@frappe.whitelist()
+        total_fetched += len(items)
+
+        for qb_item in items:
+            try:
+                result = create_or_update_item(qb_item)
+                if result == "skipped":
+                    total_skipped += 1
+                elif result == "error":
+                    total_errors += 1
+                else:
+                    total_synced += 1
+            except Exception as e:
+                total_errors += 1
+                qb_id = qb_item.get("Id", "Unknown")
+                frappe.log_error(
+                    f"Unexpected error processing item QB ID {qb_id}: {str(e)}\n{frappe.get_traceback()}",
+                    "QuickBooks Item Sync - Unexpected Error"
+                )
+
+        if len(items) < max_results:
+            break
+
+        start_position += max_results
+
+    # Log summary
+    frappe.log_error(
+        f"[QB SYNC] Item sync completed. Total fetched: {total_fetched}, Synced: {total_synced}, Skipped: {total_skipped}, Errors: {total_errors}",
+        "QuickBooks Item Sync Summary"
+    )
+
+
 def create_or_update_item(qb_item):
-    """Create or update item in ERPNext based on QuickBooks item data."""
+    """Create or update ERPNext Item from QuickBooks data"""
 
     qb_id = qb_item.get("Id")
-    item_name = qb_item.get("Description", "Unnamed Item")
-    item_type = qb_item.get("Type", "Inventory")
+    qb_name = qb_item.get("Name")
+    qb_description = qb_item.get("Description", qb_name)
 
-    # Check if the item already exists in ERPNext
-    existing = frappe.db.exists("Item", {"custom_quickbooks_item_id": qb_id})
-    if existing:
-        item = frappe.get_doc("Item", existing)
+    if not qb_name:
+        frappe.log_error(
+            f"[QB SYNC] Item QB ID {qb_id} skipped — no Name found",
+            "QuickBooks Item Sync - Missing Name"
+        )
+        return "skipped"
+
+    existing_item = frappe.db.exists(
+        "Item", {"custom_quickbooks_item_id": qb_id}
+    )
+
+    if existing_item:
+        item = frappe.get_doc("Item", existing_item)
     else:
         item = frappe.new_doc("Item")
 
-    # Check if SalesTaxCodeRef exists and add tax template
-    if qb_item.get("SalesTaxCodeRef") is not None:
-        tax_code = qb_item["SalesTaxCodeRef"].get("value")
-        if tax_code:
-            # Fetch the tax template based on QuickBooks GST Code
-            tax_template = frappe.get_all("Item Tax Template", filters={"custom_quickbooks_gst_id": tax_code}, limit=1)
+        item_code = qb_name
+        if frappe.db.exists("Item", item_code):
+            item_code = f"{qb_name}-{qb_id}"
 
-            if tax_template:
-                # Check if the tax template is already attached to the item
-                existing_tax = frappe.get_all("Item Tax Template", filters={"custom_quickbooks_gst_id": tax_code}, limit=1)
+        item.item_code = item_code
+        item.item_group = "All Item Groups"
 
-                if not existing_tax:  # Only add if the tax template is not already linked
-                    item.append("taxes", {
-                        "item_tax_template": tax_template[0].name,
-                    })
-                else:
-                    frappe.logger().info(f"[Item Sync] Tax Template {tax_template[0].name} already exists for Item {item_name}, skipping duplicate.")
-            else:
-                frappe.logger().warn(f"[Item Sync] No Item Tax Template found for QuickBooks GST Code: {tax_code}")
-
-    # Set other item properties
-    item.item_name = qb_item.get("Description", "")
+    item.item_name = qb_name
+    item.description = qb_description
     item.custom_quickbooks_item_id = qb_id
-    item.item_type = item_type
-    item.description = qb_item.get("Description", "")
+    item.custom_publish_on_app = 1
     item.stock_uom = "Unit"
     item.default_unit_of_measure = "Unit"
 
-    if "UnitPrice" in qb_item:
+    if qb_item.get("UnitPrice") is not None:
         item.standard_rate = float(qb_item["UnitPrice"])
 
-    # Map category from QBO to item group in ERPNext
-    # Check if the item has a ParentRef (category) from QuickBooks
     parent_ref = qb_item.get("ParentRef")
-    category_mapped = False
-    
-    if parent_ref:
-        parent_qb_id = parent_ref.get("value")
-        if parent_qb_id:
-            # Find the Item Group in ERPNext that matches the QuickBooks category ID
-            item_group_name = frappe.db.get_value("Item Group", {"custom_quickbooks_item_group_id": parent_qb_id}, "name")
-            if item_group_name:
-                item.item_group = item_group_name
-                category_mapped = True
-                frappe.logger().info(f"[Item Sync] Mapped QBO category {parent_qb_id} to Item Group '{item_group_name}' for item '{item_name}'")
-            else:
-                # Category not found in ERPNext
-                frappe.logger().warn(f"[Item Sync] QBO category {parent_qb_id} not found in ERPNext Item Groups. Using default for item '{item_name}'")
-    
-    # If no category was mapped, use default item group for new items
-    if not category_mapped and not existing:
-        item.item_group = "All Item Groups"
+    if parent_ref and parent_ref.get("value"):
+        item_group = frappe.db.get_value(
+            "Item Group",
+            {"custom_quickbooks_item_group_id": parent_ref["value"]},
+            "name",
+        )
+        if item_group:
+            item.item_group = item_group
+
+    # Map tax with error logging
+    tax_mapping_result = map_item_tax(item, qb_item)
 
     try:
-        # Save item and commit
         item.save(ignore_permissions=True)
         frappe.db.commit()
-        frappe.logger().info(f"[Item Sync] Item '{item_name}' (QB ID: {qb_id}) synced successfully.")
+        frappe.logger().info(
+            f"[QB SYNC] Item synced: {item.item_code} (QB ID: {qb_id})"
+        )
+        return "success"
     except Exception as e:
-        # Log error if saving the item fails, include item name in the log
-        error_message = f"Failed to sync item '{item_name}' (QB ID: {qb_id}) due to error: {str(e)}"
-        frappe.log_error(message=error_message, title=f"Failed to sync item {qb_id}")
+        frappe.log_error(
+            f"Item sync failed for QB ID {qb_id}, Name: {qb_name}, Tax Mapping: {tax_mapping_result}, Error: {str(e)}\n{frappe.get_traceback()}",
+            "QuickBooks Item Sync Error",
+        )
+        return "error"
+
+
+def map_item_tax(item, qb_item):
+    """
+    Map QuickBooks tax code to ERPNext Item Tax Template.
+    Returns status string for logging purposes.
+    """
+    qb_id = qb_item.get("Id", "Unknown")
+    item_code = getattr(item, "item_code", "Unknown")
+    
+    tax_ref = qb_item.get("SalesTaxCodeRef")
+    if not tax_ref:
+        frappe.log_error(
+            f"[QB SYNC] Tax mapping skipped for Item {item_code} (QB ID: {qb_id}) - No SalesTaxCodeRef found in QuickBooks item",
+            "QuickBooks Tax Mapping - No Tax Reference"
+        )
+        return "no_tax_ref"
+
+    tax_code = tax_ref.get("value")
+    if not tax_code:
+        frappe.log_error(
+            f"[QB SYNC] Tax mapping failed for Item {item_code} (QB ID: {qb_id}) - SalesTaxCodeRef exists but value is missing. TaxRef: {tax_ref}",
+            "QuickBooks Tax Mapping - Missing Tax Code Value"
+        )
+        return "missing_tax_code"
+
+    tax_template = frappe.db.get_value(
+        "Item Tax Template",
+        {"custom_quickbooks_gst_id": tax_code},
+        "name",
+    )
+
+    if not tax_template:
+        frappe.log_error(
+            f"[QB SYNC] Tax mapping failed for Item {item_code} (QB ID: {qb_id}) - No Item Tax Template found for QuickBooks GST code '{tax_code}'. Please create an Item Tax Template with custom_quickbooks_gst_id = '{tax_code}'",
+            "QuickBooks Tax Mapping - Template Not Found"
+        )
+        return f"template_not_found_{tax_code}"
+
+    # Check if tax template already exists on item
+    if any(t.item_tax_template == tax_template for t in item.taxes):
+        frappe.logger().info(
+            f"[QB SYNC] Tax template '{tax_template}' already exists on Item {item_code} (QB ID: {qb_id})"
+        )
+        return f"already_mapped_{tax_template}"
+
+    # Add tax template to item
+    try:
+        item.append("taxes", {"item_tax_template": tax_template})
+        frappe.logger().info(
+            f"[QB SYNC] Tax mapping successful for Item {item_code} (QB ID: {qb_id}) - Mapped QuickBooks GST code '{tax_code}' to Item Tax Template '{tax_template}'"
+        )
+        return f"mapped_{tax_template}"
+    except Exception as e:
+        frappe.log_error(
+            f"[QB SYNC] Tax mapping error for Item {item_code} (QB ID: {qb_id}) - Failed to append tax template '{tax_template}'. Error: {str(e)}\n{frappe.get_traceback()}",
+            "QuickBooks Tax Mapping - Append Error"
+        )
+        return f"append_error_{tax_template}"
+
+# @frappe.whitelist()
+# def start_item_background():
+#     refresh_quickbooks_access_token()
+
+#     """Enqueue item sync job to run in background."""
+
+#     settings = frappe.get_doc("QuickBooks Settings")
+#     if settings.allow_item_sync_from_quickbooks != 1 and not settings.enable:
+#         frappe.frappe.msgprint('Navigate to Quickbooks Settings & Please enable Item sync to continue', title="QuickBooks Item Sync Disabled",
+#                                 indicator="red",
+#                             )
+#         return
+
+#     frappe.enqueue(item_sync, queue='long', timeout=300)
+#     frappe.msgprint("Item sync from QuickBooks has been started in the background.")
+
+# @frappe.whitelist()
+# def item_sync():
+#     """Sync items from QuickBooks to ERPNext with pagination support."""
+#     settings = frappe.get_doc("QuickBooks Settings")
+#     access_token = settings.access_token
+#     company_id = settings.quickbooks_company_id
+#     base_url = settings.base_url.strip().rstrip("/")
+#     minor_version = settings.minor_version or "75"
+
+#     start_position = 1
+#     max_results = 100  # QuickBooks allows max 100 per page
+
+#     while True:
+#         query = f"SELECT * FROM Item STARTPOSITION {start_position} MAXRESULTS {max_results}"
+#         url = f"{base_url}/v3/company/{company_id}/query?query={query.replace(' ', '%20')}&minorversion={minor_version}"
+
+#         headers = {
+#             "Authorization": f"Bearer {access_token}",
+#             "Content-Type": "application/json",
+#             "Accept": "application/json"
+#         }
+
+#         try:
+#             response = requests.get(url, headers=headers)
+#             response.raise_for_status()
+#             data = response.json()
+
+#             items = data.get("QueryResponse", {}).get("Item", [])
+#             if not items:
+#                 break  # No more items to fetch
+
+#             for qb_item in items:
+#                 create_or_update_item(qb_item)
+
+#             frappe.logger().info(f"[QB SYNC] Fetched {len(items)} items starting from {start_position}.")
+
+#             if len(items) < max_results:
+#                 break  # Last page reached
+
+#             start_position += max_results
+
+#         except Exception as e:
+#             frappe.log_error(message=str(e), title="QuickBooks Item Sync Failed")
+#             break
+
+
+# @frappe.whitelist()
+# def create_or_update_item(qb_item):
+#     """Create or update item in ERPNext based on QuickBooks item data."""
+
+#     qb_id = qb_item.get("Id")
+#     item_name = qb_item.get("Description", "Unnamed Item")
+#     item_type = qb_item.get("Type", "Inventory")
+
+#     # Check if the item already exists in ERPNext
+#     existing = frappe.db.exists("Item", {"custom_quickbooks_item_id": qb_id})
+#     if existing:
+#         item = frappe.get_doc("Item", existing)
+#     else:
+#         item = frappe.new_doc("Item")
+
+#     # Check if SalesTaxCodeRef exists and add tax template
+#     if qb_item.get("SalesTaxCodeRef") is not None:
+#         tax_code = qb_item["SalesTaxCodeRef"].get("value")
+#         if tax_code:
+#             # Fetch the tax template based on QuickBooks GST Code
+#             tax_template = frappe.get_all("Item Tax Template", filters={"custom_quickbooks_gst_id": tax_code}, limit=1)
+
+#             if tax_template:
+#                 # Check if the tax template is already attached to the item
+#                 existing_tax = frappe.get_all("Item Tax Template", filters={"custom_quickbooks_gst_id": tax_code}, limit=1)
+
+#                 if not existing_tax:  # Only add if the tax template is not already linked
+#                     item.append("taxes", {
+#                         "item_tax_template": tax_template[0].name,
+#                     })
+#                 else:
+#                     frappe.logger().info(f"[Item Sync] Tax Template {tax_template[0].name} already exists for Item {item_name}, skipping duplicate.")
+#             else:
+#                 frappe.logger().warn(f"[Item Sync] No Item Tax Template found for QuickBooks GST Code: {tax_code}")
+
+#     # Set other item properties
+#     item.item_name = qb_item.get("Description", "")
+#     item.custom_quickbooks_item_id = qb_id
+#     item.item_type = item_type
+#     item.description = qb_item.get("Description", "")
+#     item.stock_uom = "Unit"
+#     item.default_unit_of_measure = "Unit"
+
+#     if "UnitPrice" in qb_item:
+#         item.standard_rate = float(qb_item["UnitPrice"])
+
+#     # Map category from QBO to item group in ERPNext
+#     # Check if the item has a ParentRef (category) from QuickBooks
+#     parent_ref = qb_item.get("ParentRef")
+#     category_mapped = False
+    
+#     if parent_ref:
+#         parent_qb_id = parent_ref.get("value")
+#         if parent_qb_id:
+#             # Find the Item Group in ERPNext that matches the QuickBooks category ID
+#             item_group_name = frappe.db.get_value("Item Group", {"custom_quickbooks_item_group_id": parent_qb_id}, "name")
+#             if item_group_name:
+#                 item.item_group = item_group_name
+#                 category_mapped = True
+#                 frappe.logger().info(f"[Item Sync] Mapped QBO category {parent_qb_id} to Item Group '{item_group_name}' for item '{item_name}'")
+#             else:
+#                 # Category not found in ERPNext
+#                 frappe.logger().warn(f"[Item Sync] QBO category {parent_qb_id} not found in ERPNext Item Groups. Using default for item '{item_name}'")
+    
+#     # If no category was mapped, use default item group for new items
+#     if not category_mapped and not existing:
+#         item.item_group = "All Item Groups"
+
+#     try:
+#         # Save item and commit
+#         item.save(ignore_permissions=True)
+#         frappe.db.commit()
+#         frappe.logger().info(f"[Item Sync] Item '{item_name}' (QB ID: {qb_id}) synced successfully.")
+#     except Exception as e:
+#         # Log error if saving the item fails, include item name in the log
+#         error_message = f"Failed to sync item '{item_name}' (QB ID: {qb_id}) due to error: {str(e)}"
+#         frappe.log_error(message=error_message, title=f"Failed to sync item {qb_id}")
 
 @frappe.whitelist()
 def start_item_group_background():
@@ -993,122 +1555,320 @@ def sync_items_to_quickbooks_background():
     frappe.msgprint("Item sync to QuickBooks has been started in the background.")
 
 
+
 @frappe.whitelist()
 def start_stock_sync_background():
-    """Enqueue stock sync job to run in background."""
+    """Kick off QuickBooks stock sync in small background jobs."""
     refresh_quickbooks_access_token()
 
-    settings = frappe.get_doc("QuickBooks Settings")
+    settings = frappe.get_single("QuickBooks Settings")
     if not settings.enable:
-        frappe.msgprint(
-            'Navigate to Quickbooks Settings & Please enable QuickBooks Integration to continue',
-            title="QuickBooks Integration Disabled",
-            indicator="red"
+        frappe.throw(
+            "Please enable QuickBooks Integration in QuickBooks Settings"
+        )
+
+    frappe.enqueue(
+        sync_stock_page,
+        start_position=1,
+        queue="long",
+        timeout=300,
+        job_name="qb_stock_sync_page_1"
+    )
+
+    frappe.msgprint("QuickBooks stock sync started in background.")
+
+
+def sync_stock_page(start_position: int):
+    """Sync one page of inventory items from QuickBooks."""
+
+    BATCH_SIZE = 50
+
+    settings = frappe.get_single("QuickBooks Settings")
+    base_url = settings.base_url.rstrip("/")
+    company_id = settings.quickbooks_company_id
+    minor_version = settings.minor_version or "75"
+
+    access_token = settings.access_token
+    if not access_token:
+        refresh_quickbooks_access_token()
+        access_token = frappe.get_single("QuickBooks Settings").access_token
+
+    query = (
+        f"SELECT * FROM Item WHERE Type='Inventory' "
+        f"STARTPOSITION {start_position} MAXRESULTS {BATCH_SIZE}"
+    )
+
+    url = (
+        f"{base_url}/v3/company/{company_id}/query"
+        f"?query={query.replace(' ', '%20')}"
+        f"&minorversion={minor_version}"
+    )
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json"
+    }
+
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+
+        if response.status_code == 401:
+            refresh_quickbooks_access_token()
+            headers["Authorization"] = (
+                f"Bearer {frappe.get_single('QuickBooks Settings').access_token}"
+            )
+            response = requests.get(url, headers=headers, timeout=30)
+
+        response.raise_for_status()
+        data = response.json()
+
+    except Exception as e:
+        frappe.log_error(
+            f"QuickBooks fetch failed at position {start_position}\n{frappe.get_traceback()}",
+            "QB Stock Sync - API Error"
         )
         return
 
-    frappe.enqueue(sync_stock_from_quickbooks, queue='long', timeout=600)
-    frappe.msgprint("Stock sync and reconciliation from QuickBooks has been started in the background.")
+    items = data.get("QueryResponse", {}).get("Item", [])
+    is_last_page = False
+    
+    if not items:
+        is_last_page = True
+    else:
+        if isinstance(items, dict):
+            items = [items]
+        
+        # Check if this is the last page (less than BATCH_SIZE items returned)
+        if len(items) < BATCH_SIZE:
+            is_last_page = True
+
+    reconciliation_items = []
+
+    if items:
+        for qb_item in items:
+            try:
+                item_data = prepare_item_for_reconciliation(qb_item)
+                if item_data:
+                    reconciliation_items.append(item_data)
+            except Exception:
+                frappe.log_error(
+                    f"Item preparation failed: {qb_item.get('Id')}\n{frappe.get_traceback()}",
+                    "QB Stock Sync - Item Error"
+                )
+
+    if reconciliation_items:
+        create_stock_reconciliation(reconciliation_items, is_last_page=is_last_page)
+        frappe.db.commit()
+
+    # Enqueue next page if not last page
+    if not is_last_page and len(items) == BATCH_SIZE:
+        frappe.enqueue(
+            sync_stock_page,
+            start_position=start_position + BATCH_SIZE,
+            queue="long",
+            timeout=300,
+            job_name=f"qb_stock_sync_page_{start_position + BATCH_SIZE}"
+        )
+
+
+# @frappe.whitelist()
+# def start_stock_sync_background():
+#     """Enqueue stock sync job to run in background."""
+#     refresh_quickbooks_access_token()
+
+#     settings = frappe.get_doc("QuickBooks Settings")
+#     if not settings.enable:
+#         frappe.msgprint(
+#             'Navigate to Quickbooks Settings & Please enable QuickBooks Integration to continue',
+#             title="QuickBooks Integration Disabled",
+#             indicator="red"
+#         )
+#         return
+
+#     frappe.enqueue(sync_stock_from_quickbooks, queue='long', timeout=600)
+#     frappe.msgprint("Stock sync and reconciliation from QuickBooks has been started in the background.")
 
 
 @frappe.whitelist()
 def sync_stock_from_quickbooks():
-    """Sync inventory stock quantities from QuickBooks to ERPNext with stock reconciliation."""
-    frappe.logger().info("[QB SYNC] Started stock sync job")
+    """
+    Deprecated function - kept for RQ job deserialization compatibility.
+    This function was replaced by sync_stock_page for better pagination handling.
+    Old jobs referencing this function will fail gracefully.
+    """
+    frappe.log_error(
+        "[QB SYNC] Deprecated sync_stock_from_quickbooks called. Use start_stock_sync_background instead.",
+        "QuickBooks Stock Sync - Deprecated Function"
+    )
+    return {"status": "deprecated", "message": "This function has been replaced. Please use start_stock_sync_background instead."}
 
-    settings = frappe.get_single("QuickBooks Settings")
-    access_token = settings.access_token
-    company_id = settings.quickbooks_company_id
-    base_url = settings.base_url.strip().rstrip("/")
-    minor_version = settings.minor_version or "75"
 
-    if not access_token or not company_id:
-        frappe.log_error("Missing QuickBooks access token or company ID", "QuickBooks Stock Sync Failed")
-        return
+# @frappe.whitelist()
+# def sync_stock_from_quickbooks_old():
+#     """Sync inventory stock quantities from QuickBooks to ERPNext with stock reconciliation."""
+#     frappe.log_error("[QB SYNC] Started stock sync job", "QuickBooks Stock Sync - Started")
 
-    start_position = 1
-    max_results = 100
-    synced_count = 0
-    error_count = 0
-    reconciliation_items = []  # Collect items for batch reconciliation
+#     try:
+#         # Refresh access token before syncing (tokens expire after 1 hour)
+#         try:
+#             refresh_quickbooks_access_token()
+#         except Exception as token_error:
+#             frappe.log_error(
+#                 message=f"Failed to refresh QuickBooks access token: {str(token_error)}\n{frappe.get_traceback()}",
+#                 title="QuickBooks Stock Sync - Token Refresh Failed"
+#             )
+#             return
 
-    while True:
-        # Query inventory items from QuickBooks
-        query = f"SELECT * FROM Item WHERE Type='Inventory' STARTPOSITION {start_position} MAXRESULTS {max_results}"
-        url = f"{base_url}/v3/company/{company_id}/query?query={query.replace(' ', '%20')}&minorversion={minor_version}"
+#         settings = frappe.get_single("QuickBooks Settings")
+#         access_token = settings.access_token
+#         company_id = settings.quickbooks_company_id
+#         base_url = settings.base_url.strip().rstrip("/")
+#         minor_version = settings.minor_version or "75"
 
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json"
-        }
+#         if not access_token or not company_id:
+#             frappe.log_error("Missing QuickBooks access token or company ID", "QuickBooks Stock Sync Failed")
+#             return
 
-        try:
-            response = requests.get(url, headers=headers)
-            response.raise_for_status()
-            data = response.json()
+#         start_position = 1
+#         max_results = 100
+#         synced_count = 0
+#         error_count = 0
+#         reconciliation_items = []  # Collect items for batch reconciliation
 
-            items = data.get("QueryResponse", {}).get("Item", [])
-            if not items:
-                break  # No more items to fetch
+#         while True:
+#             # Query inventory items from QuickBooks
+#             query = f"SELECT * FROM Item WHERE Type='Inventory' STARTPOSITION {start_position} MAXRESULTS {max_results}"
+#             url = f"{base_url}/v3/company/{company_id}/query?query={query.replace(' ', '%20')}&minorversion={minor_version}"
 
-            for qb_item in items:
-                try:
-                    item_data = prepare_item_for_reconciliation(qb_item)
-                    if item_data:
-                        reconciliation_items.append(item_data)
-                        synced_count += 1
-                except Exception as e:
-                    error_count += 1
-                    frappe.log_error(
-                        message=f"Error preparing stock for item {qb_item.get('Id')}: {str(e)}",
-                        title="QuickBooks Stock Sync Item Error"
-                    )
+#             headers = {
+#                 "Authorization": f"Bearer {access_token}",
+#                 "Content-Type": "application/json",
+#                 "Accept": "application/json"
+#             }
 
-            frappe.logger().info(f"[QB SYNC] Fetched {len(items)} inventory items starting from {start_position}.")
+#             try:
+#                 response = requests.get(url, headers=headers, timeout=60)
+                
+#                 # Handle 401 Unauthorized - token expired, refresh and retry
+#                 if response.status_code == 401:
+#                     frappe.log_error(f"[QB SYNC] Got 401 at position {start_position}, refreshing token and retrying...", "QuickBooks Stock Sync - Token Refresh")
+#                     try:
+#                         refresh_quickbooks_access_token()
+#                         settings = frappe.get_single("QuickBooks Settings")  # Reload settings
+#                         access_token = settings.access_token
+#                         headers["Authorization"] = f"Bearer {access_token}"
+                        
+#                         # Retry the request with new token
+#                         response = requests.get(url, headers=headers, timeout=60)
+#                         response.raise_for_status()
+#                     except Exception as retry_error:
+#                         error_msg = (
+#                             f"401 Unauthorized - Token expired and refresh/retry failed.\n"
+#                             f"Position: {start_position}\n"
+#                             f"Error: {str(retry_error)}\n"
+#                             f"{frappe.get_traceback()}"
+#                         )
+#                         frappe.log_error(error_msg, "QuickBooks Stock Sync - Token Refresh Failed")
+#                         break
+#                 else:
+#                     response.raise_for_status()
+                
+#                 data = response.json()
 
-            if len(items) < max_results:
-                break  # Last page reached
+#                 # Handle both list and single dict responses from QuickBooks API
+#                 items = data.get("QueryResponse", {}).get("Item", [])
+#                 if not items:
+#                     break  # No more items to fetch
+                
+#                 # Ensure items is a list (QuickBooks sometimes returns a single dict)
+#                 if isinstance(items, dict):
+#                     items = [items]
 
-            start_position += max_results
+#                 for qb_item in items:
+#                     try:
+#                         item_data = prepare_item_for_reconciliation(qb_item)
+#                         if item_data:
+#                             reconciliation_items.append(item_data)
+#                             synced_count += 1
+#                     except Exception as e:
+#                         error_count += 1
+#                         frappe.log_error(
+#                             message=f"Error preparing stock for item {qb_item.get('Id')}: {str(e)}\n{frappe.get_traceback()}",
+#                             title="QuickBooks Stock Sync Item Error"
+#                         )
 
-        except Exception as e:
-            frappe.log_error(message=str(e), title="QuickBooks Stock Sync Failed")
-            break
+#                 frappe.log_error(f"[QB SYNC] Fetched {len(items)} inventory items starting from {start_position}.", "QuickBooks Stock Sync - Progress")
 
-    # Create Stock Reconciliation entries
-    if reconciliation_items:
-        try:
-            create_stock_reconciliation(reconciliation_items)
-            frappe.logger().info(f"[QB SYNC] Created Stock Reconciliation with {len(reconciliation_items)} items.")
-        except Exception as e:
-            frappe.log_error(
-                message=f"Error creating Stock Reconciliation: {str(e)}",
-                title="QuickBooks Stock Reconciliation Error"
-            )
-            error_count += len(reconciliation_items)
+#                 # Periodic commit to prevent memory issues and save progress
+#                 if synced_count % 500 == 0:
+#                     frappe.db.commit()
+#                     frappe.log_error(f"[QB SYNC] Committed progress: {synced_count} items processed so far.", "QuickBooks Stock Sync - Progress")
 
-    frappe.logger().info(f"[QB SYNC] Completed stock sync job. Synced: {synced_count}, Errors: {error_count}")
-    frappe.db.commit()
+#                 if len(items) < max_results:
+#                     break  # Last page reached
+
+#                 start_position += max_results
+
+#             except requests.exceptions.Timeout:
+#                 frappe.log_error(
+#                     message=f"Request timeout at position {start_position}",
+#                     title="QuickBooks Stock Sync - Timeout"
+#                 )
+#                 break
+#             except requests.exceptions.RequestException as e:
+#                 frappe.log_error(
+#                     message=f"Request error at position {start_position}: {str(e)}",
+#                     title="QuickBooks Stock Sync - Request Error"
+#                 )
+#                 break
+#             except Exception as e:
+#                 frappe.log_error(
+#                     message=f"Unexpected error at position {start_position}: {str(e)}\n{frappe.get_traceback()}",
+#                     title="QuickBooks Stock Sync Failed"
+#                 )
+#                 break
+
+#         # Create Stock Reconciliation entries
+#         if reconciliation_items:
+#             try:
+#                 create_stock_reconciliation(reconciliation_items)
+#                 frappe.log_error(f"[QB SYNC] Created Stock Reconciliation with {len(reconciliation_items)} items.", "QuickBooks Stock Sync - Success")
+#             except Exception as e:
+#                 frappe.log_error(
+#                     message=f"Error creating Stock Reconciliation: {str(e)}\n{frappe.get_traceback()}",
+#                     title="QuickBooks Stock Reconciliation Error"
+#                 )
+#                 error_count += len(reconciliation_items)
+
+#         frappe.log_error(f"[QB SYNC] Completed stock sync job. Synced: {synced_count}, Errors: {error_count}", "QuickBooks Stock Sync - Completed")
+#         frappe.db.commit()
+        
+#     except Exception as e:
+#         frappe.log_error(
+#             message=f"Critical error in stock sync job: {str(e)}\n{frappe.get_traceback()}",
+#             title="QuickBooks Stock Sync - Critical Error"
+#         )
+#         frappe.db.rollback()
+#         raise
 
 
 def prepare_item_for_reconciliation(qb_item):
     """Prepare item data for stock reconciliation."""
     qb_id = qb_item.get("Id")
     if not qb_id:
-        frappe.logger().error("[QB SYNC] Missing Item ID in QuickBooks data.")
+        frappe.log_error("[QB SYNC] Missing Item ID in QuickBooks data.", "QuickBooks Stock Sync - Item Error")
         return None
 
     # Find ERPNext item by QuickBooks ID
     erpnext_item = frappe.db.get_value("Item", {"custom_quickbooks_item_id": qb_id}, "name")
     if not erpnext_item:
-        frappe.logger().warn(f"[QB SYNC] Item with QuickBooks ID {qb_id} not found in ERPNext. Skipping stock update.")
+        frappe.log_error(f"[QB SYNC] Item with QuickBooks ID {qb_id} not found in ERPNext. Skipping stock update.", "QuickBooks Stock Sync - Item Not Found")
         return None
 
     # Get item doc to check if it's a stock item
     item_doc = frappe.get_doc("Item", erpnext_item)
     if not item_doc.is_stock_item:
-        frappe.logger().info(f"[QB SYNC] Item {erpnext_item} is not a stock item. Skipping stock update.")
+        frappe.log_error(f"[QB SYNC] Item {erpnext_item} is not a stock item. Skipping stock update.", "QuickBooks Stock Sync - Not Stock Item")
         return None
 
     # Get quantity on hand from QuickBooks
@@ -1159,7 +1919,7 @@ def prepare_item_for_reconciliation(qb_item):
                 default_warehouse = warehouses[0].name
     
     if not default_warehouse:
-        frappe.logger().warn(f"[QB SYNC] No enabled warehouse found for item {erpnext_item}. Skipping stock update.")
+        frappe.log_error(f"[QB SYNC] No enabled warehouse found for item {erpnext_item}. Skipping stock update.", "QuickBooks Stock Sync - No Warehouse")
         return None
 
     # Valuation rate = 1 as per requirement
@@ -1179,8 +1939,8 @@ def prepare_item_for_reconciliation(qb_item):
     }
 
 
-def create_stock_reconciliation(reconciliation_items):
-    """Create Stock Reconciliation document with items from QuickBooks - following NetSuite pattern."""
+def create_stock_reconciliation(reconciliation_items, is_last_page=False):
+    """Create or update Stock Reconciliation document with items from QuickBooks."""
     if not reconciliation_items:
         return
 
@@ -1196,7 +1956,7 @@ def create_stock_reconciliation(reconciliation_items):
         if companies:
             company = companies[0].name
         else:
-            frappe.logger().error("[QB SYNC] No company found. Cannot create Stock Reconciliation.")
+            frappe.log_error("[QB SYNC] No company found. Cannot create Stock Reconciliation.", "QuickBooks Stock Sync - No Company")
             return
 
     company_abbr = frappe.db.get_value("Company", company, "abbr") or ""
@@ -1209,16 +1969,53 @@ def create_stock_reconciliation(reconciliation_items):
             warehouse_groups[warehouse] = []
         warehouse_groups[warehouse].append(item)
 
-    # Create Stock Reconciliation for each warehouse
+    # Create or update Stock Reconciliation for each warehouse
     for warehouse, items in warehouse_groups.items():
         try:
             # Get warehouse company to ensure consistency
             warehouse_company = frappe.db.get_value("Warehouse", warehouse, "company")
             reconciliation_company = warehouse_company or company
             
-            # Determine purpose: Opening Stock or regular reconciliation
-            existing_sr_count = frappe.db.count("Stock Reconciliation", {"company": reconciliation_company})
-            purpose = "Opening Stock" if existing_sr_count == 0 else "Stock Reconciliation"
+            # Find the most recent draft Stock Reconciliation for this warehouse/company
+            # Get the most recently created draft SR that has items for this warehouse
+            existing_sr_name = frappe.db.sql("""
+                SELECT DISTINCT sr.name
+                FROM `tabStock Reconciliation` sr
+                INNER JOIN `tabStock Reconciliation Item` sri ON sr.name = sri.parent
+                WHERE sr.docstatus = 0
+                AND sr.company = %s
+                AND sri.warehouse = %s
+                ORDER BY sr.creation DESC
+                LIMIT 1
+            """, (reconciliation_company, warehouse), as_dict=True)
+            
+            is_new_document = False
+            
+            if existing_sr_name and existing_sr_name[0].get("name"):
+                # Update existing draft Stock Reconciliation
+                sr_name = existing_sr_name[0]["name"]
+                stock_reconciliation = frappe.get_doc("Stock Reconciliation", sr_name)
+                frappe.log_error(
+                    f"[QB SYNC] Found existing draft Stock Reconciliation {sr_name} for warehouse {warehouse}. Updating...",
+                    "QuickBooks Stock Sync - Found Existing SR"
+                )
+            else:
+                # Create new draft Stock Reconciliation
+                is_new_document = True
+                stock_reconciliation = frappe.new_doc("Stock Reconciliation")
+                stock_reconciliation.company = reconciliation_company
+                
+                # Determine purpose: Opening Stock or regular reconciliation
+                existing_sr_count = frappe.db.count("Stock Reconciliation", {"company": reconciliation_company, "docstatus": 1})
+                purpose = "Opening Stock" if existing_sr_count == 0 else "Stock Reconciliation"
+                stock_reconciliation.purpose = purpose
+                
+                # Set expense account for opening stock
+                if purpose == "Opening Stock" and company_abbr:
+                    expense_account = f"Temporary Opening - {company_abbr}"
+                    # Check if account exists, if not, skip it
+                    if frappe.db.exists("Account", expense_account):
+                        stock_reconciliation.expense_account = expense_account
             
             # Prepare items list with all required fields
             items_list = []
@@ -1261,37 +2058,59 @@ def create_stock_reconciliation(reconciliation_items):
                     
                     items_list.append(item_entry)
 
-            # Only create if there are items to reconcile
+            # Add items to Stock Reconciliation (avoid duplicates)
             if items_list:
-                stock_reconciliation = frappe.new_doc("Stock Reconciliation")
-                stock_reconciliation.company = reconciliation_company
-                stock_reconciliation.purpose = purpose
+                existing_item_codes = {row.item_code for row in stock_reconciliation.items}
                 
-                # Set expense account for opening stock
-                if purpose == "Opening Stock" and company_abbr:
-                    expense_account = f"Temporary Opening - {company_abbr}"
-                    # Check if account exists, if not, skip it
-                    if frappe.db.exists("Account", expense_account):
-                        stock_reconciliation.expense_account = expense_account
-                
-                # Set items
                 for item_entry in items_list:
-                    stock_reconciliation.append("items", item_entry)
+                    # Update existing item or add new one
+                    if item_entry["item_code"] in existing_item_codes:
+                        # Update existing item row
+                        for row in stock_reconciliation.items:
+                            if row.item_code == item_entry["item_code"] and row.warehouse == warehouse:
+                                row.qty = item_entry["qty"]
+                                row.valuation_rate = item_entry["valuation_rate"]
+                                if "batch_no" in item_entry:
+                                    row.batch_no = item_entry["batch_no"]
+                                break
+                    else:
+                        # Add new item row
+                        stock_reconciliation.append("items", item_entry)
+                        existing_item_codes.add(item_entry["item_code"])
                 
-                stock_reconciliation.insert(ignore_permissions=True)
-                stock_reconciliation.submit()
+                # Save the document (insert if new, save if existing)
+                if is_new_document:
+                    stock_reconciliation.insert(ignore_permissions=True)
+                    frappe.log_error(
+                        f"[QB SYNC] Created Stock Reconciliation {stock_reconciliation.name} "
+                        f"for warehouse {warehouse} with {len(items_list)} items.",
+                        "QuickBooks Stock Sync - Stock Reconciliation Created"
+                    )
+                else:
+                    stock_reconciliation.save(ignore_permissions=True)
+                    frappe.log_error(
+                        f"[QB SYNC] Updated Stock Reconciliation {stock_reconciliation.name} "
+                        f"for warehouse {warehouse} with {len(items_list)} items.",
+                        "QuickBooks Stock Sync - Stock Reconciliation Updated"
+                    )
                 
-                frappe.logger().info(
-                    f"[QB SYNC] Created and submitted Stock Reconciliation {stock_reconciliation.name} "
-                    f"for warehouse {warehouse} with {len(items_list)} items. Purpose: {purpose}."
-                )
+                # Submit only if this is the last page
+                if is_last_page:
+                    stock_reconciliation.reload()  # Reload to get latest state
+                    stock_reconciliation.submit()
+                    frappe.log_error(
+                        f"[QB SYNC] Submitted Stock Reconciliation {stock_reconciliation.name} "
+                        f"for warehouse {warehouse}.",
+                        "QuickBooks Stock Sync - Stock Reconciliation Submitted"
+                    )
             else:
-                frappe.logger().info(f"[QB SYNC] No items to reconcile for warehouse {warehouse}.")
+                frappe.log_error(f"[QB SYNC] No items to reconcile for warehouse {warehouse}.", "QuickBooks Stock Sync - No Items")
 
         except Exception as e:
             frappe.log_error(
-                message=f"Error creating Stock Reconciliation for warehouse {warehouse}: {str(e)}\n{frappe.get_traceback()}",
+                message=f"Error creating/updating Stock Reconciliation for warehouse {warehouse}: {str(e)}\n{frappe.get_traceback()}",
                 title="QuickBooks Stock Reconciliation Creation Error"
             )
-            raise
+            # Don't re-raise - continue with other warehouses instead of crashing the worker
+            frappe.log_error(f"[QB SYNC] Skipping warehouse {warehouse} due to error, continuing with others...", "QuickBooks Stock Sync - Warehouse Skipped")
 

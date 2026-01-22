@@ -43,7 +43,11 @@
      "suppliers_section",
      "allow_supplier_sync_from_quickbooks",
      "column_break_suppliers",
-     "allow_supplier_sync_to_quickbooks"
+     "allow_supplier_sync_to_quickbooks",
+     "sales_documents_section",
+     "allow_invoice_sync",
+     "column_break_sales_docs",
+     "allow_order_sync"
     ],
     "fields": [
      {
@@ -250,6 +254,29 @@
       "fieldname": "allow_supplier_sync_to_quickbooks",
       "fieldtype": "Check",
       "label": "Allow Supplier Sync to Quickbooks"
+     },
+     {
+      "fieldname": "sales_documents_section",
+      "fieldtype": "Section Break",
+      "label": "Sales Documents"
+     },
+     {
+      "default": "0",
+      "description": "ERPNext ---> Quickbooks",
+      "fieldname": "allow_invoice_sync",
+      "fieldtype": "Check",
+      "label": "Allow Invoice Sync to QuickBooks"
+     },
+     {
+      "fieldname": "column_break_sales_docs",
+      "fieldtype": "Column Break"
+     },
+     {
+      "default": "0",
+      "description": "ERPNext ---> Quickbooks",
+      "fieldname": "allow_order_sync",
+      "fieldtype": "Check",
+      "label": "Allow Order Sync to QuickBooks"
      },
      {
       "fieldname": "webhook_secret_section",
