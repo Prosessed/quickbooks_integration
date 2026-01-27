@@ -1828,6 +1828,7 @@ def refresh_sales_invoice_list(docname: str):
         })
 
     doc.count = len(invoices)
+    doc.sales_invoices_count = len(invoices)
     doc.save(ignore_permissions=True)
 
     return {"message": f"Refreshed {len(invoices)} invoices (excluding cancelled)."}
@@ -1977,6 +1978,7 @@ def refresh_purchase_invoices(docname: str):
         })
 
     doc.purchase_count = len(invoices)
+    doc.purchase_invoices_count = len(invoices)
     doc.save(ignore_permissions=True)
 
     return {"message": f"Refreshed {len(invoices)} invoices (excluding cancelled)."}

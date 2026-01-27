@@ -14,7 +14,8 @@
      {
       "fieldname": "invoice_name",
       "fieldtype": "Link",
-      "label": "Invoice Name",
+      "in_list_view": 1,
+      "label": "Purchase Invoice ID",
       "options": "Purchase Invoice"
      },
      {

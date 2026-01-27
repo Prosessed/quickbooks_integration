@@ -1,241 +1,478 @@
-
 frappe.ui.form.on("QuickBooks Sync", {
-
     refresh(frm) {
-        frm.get_field("sync_customers").$input.addClass('btn-primary');
-        frm.get_field("sync_customers_to_quickbooks").$input.addClass('btn-primary');
-        frm.get_field("sync_sales_order").$input.addClass('btn-primary');
-        frm.get_field("sync_items").$input.addClass('btn-primary');
-        frm.get_field("sync_suppliers").$input.addClass('btn-primary');
-        frm.get_field("sync_suppliers_to_quickbooks").$input.addClass('btn-primary');
-        frm.get_field("sync_sales_invoices").$input.addClass('btn-primary');
-        frm.get_field("refresh_sales_invoices").$input.addClass('btn-primary');
-        frm.get_field("sync_items_to_quickbooks").$input.addClass('btn-primary');
-        frm.get_field("sync_item_images").$input.addClass('btn-primary');
-        frm.get_field("sync_purchase_invoices").$input.addClass('btn-primary');
-        frm.get_field("refresh_purchase_invoices").$input.addClass('btn-primary');
-        frm.get_field("sync_stock").$input.addClass('btn-primary');
-        frm.get_field("sync_item_groups").$input.addClass('btn-primary');
-
-
-       
-        
-       
-    },
-
-    sync_customers_to_quickbooks(frm) {
-        frappe.call({
-            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_customer_sync",
-            args: {},
-            callback: (r) => {
-                if (!r.exc) {
-                    frappe.msgprint("Customer sync from prosessed to quickbooks has started in background.");
-                }
+        [
+            "sync_customers",
+            "sync_customers_to_quickbooks",
+            "sync_sales_order",
+            "sync_items",
+            "sync_suppliers",
+            "sync_suppliers_to_quickbooks",
+            "sync_sales_invoices",
+            "refresh_sales_invoices",
+            "sync_items_to_quickbooks",
+            "sync_item_images",
+            "sync_purchase_invoices",
+            "refresh_purchase_invoices",
+            "sync_stock",
+            "sync_item_groups",
+            "refresh_items",
+            "refresh_suppliers",
+            "refresh_customers",
+            "refresh_sales_orders"
+        ].forEach(field => {
+            if (frm.get_field(field)) {
+                frm.get_field(field).$input.addClass("btn-primary");
             }
         });
+
+        refresh_all_counts(frm);
     },
 
+    /* ---------------- Customers ---------------- */
 
-    refresh_sales_invoices(frm) {
-        frappe.call({
-            method: "quickbooks_integration.api.refresh_sales_invoice_list",
-            args: { docname: frm.doc.name },
-            freeze: true,
-            freeze_msg: __("Fetching latest Sales Invoices..."),
-            callback: function (r) {
-                if (!r.exc) {
-                    frm.reload_doc();
-                    frappe.msgprint("Invoice list refreshed.");
-                }
-            }
-        });
-    },
-
-    refresh_purchase_invoices(frm) {
-        frappe.call({
-            method: "quickbooks_integration.api.refresh_purchase_invoices",
-            args: { docname: frm.doc.name },
-            freeze: true,
-            freeze_msg: __("Fetching latest Sales Invoices..."),
-            callback: function (r) {
-                if (!r.exc) {
-                    frm.reload_doc();
-                    frappe.msgprint("Invoice list refreshed.");
-                }
-            }
-        });
-    },
-
-    sync_purchase_invoices: (frm) => {
-        if (frm.doc.purchase_invoice_list && frm.doc.purchase_invoice_list.length) {
-            frappe.call({
-                method: "quickbooks_integration.api.bulk_sync_purchase_invoices",  // ✅ full path to API
-                args: {
-                    docname: frm.doc.name,
-                    selected_invoices: frm.doc.purchase_invoice_list.filter(row => row.__checked)
-                },
-                freeze: true,
-                freeze_msg: __("Syncing Purchase Sales Invoices..."),
-                callback: (r) => {
-                    if (!r.exc) {
-                        frm.reload_doc();
-                        frappe.msgprint(r.message.message || "Bulk sync complete.");
-                    }
-                }
-            });
-        } else {
-            frappe.msgprint(__("No Sales Invoices available for sync."));
-        }
-    },
-  
-    sync_sales_invoices: (frm) => {
-        if (frm.doc.sales_invoice_list && frm.doc.sales_invoice_list.length) {
-            frappe.call({
-                method: "quickbooks_integration.api.bulk_sync_invoices",  
-                args: {
-                    docname: frm.doc.name,
-                    selected_invoices: frm.doc.sales_invoice_list.filter(row => row.__checked)
-                },
-                freeze: true,
-                freeze_msg: __("Syncing Sales Invoices..."),
-                callback: (r) => {
-                    if (!r.exc) {
-                        frm.reload_doc();
-                        frappe.msgprint(r.message.message || "Bulk sync complete.");
-                    }
-                }
-            });
-        } else {
-            frappe.msgprint(__("No Sales Invoices available for sync."));
-        }
-    }
-    
-,    
-   
     sync_customers(frm) {
         frappe.call({
             method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_customer_background",
-            args: {},
-            callback: (r) => {
-                if (!r.exc) {
-                    frappe.msgprint("Customer sync from quickbooks to prosessed has started in background.");
-                }
+            callback: () => {
+                frappe.msgprint("Customer sync from QuickBooks to Prosessed started.");
+                setTimeout(() => refresh_all_counts(frm), 2000);
             }
         });
     },
+
+    sync_customers_to_quickbooks(frm) {
+        const selected = (frm.doc.customer_list || []).filter(r => r.__checked && !r.is_synced);
+        
+        if (selected.length === 0) {
+            // If no selection, sync all unsynced customers (backward compatibility)
+            frappe.call({
+                method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_customer_sync",
+                callback: () => {
+                    frappe.msgprint("Customer sync from Prosessed to QuickBooks started.");
+                    setTimeout(() => refresh_all_counts(frm), 2000);
+                }
+            });
+            return;
+        }
+        
+        frappe.call({
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.bulk_sync_customers",
+            args: { docname: frm.doc.name, selected_customers: selected },
+            freeze: true,
+            freeze_msg: __("Syncing Customers..."),
+            callback: (r) => {
+                if (r.message && r.message.message) {
+                    frappe.msgprint(r.message.message);
+                }
+                refresh_customers(frm, false);
+            }
+        });
+    },
+
+    refresh_customers(frm, show_message = true) {
+        frappe.call({
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.refresh_customer_list",
+            args: { docname: frm.doc.name },
+            freeze: true,
+            freeze_msg: __("Fetching Customers..."),
+            callback: () => {
+                setTimeout(() => {
+                    frm.reload_doc().then(() => {
+                        if (show_message) {
+                            frappe.msgprint("Customers refreshed.");
+                        }
+                        setTimeout(() => refresh_all_counts(frm), 1000);
+                    }).catch(() => {
+                        frm.refresh_field("customer_list");
+                        if (show_message) {
+                            frappe.msgprint("Customers refreshed.");
+                        }
+                    });
+                }, 100);
+            }
+        });
+    },
+
+    /* ---------------- Items ---------------- */
 
     sync_items(frm) {
         frappe.call({
             method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_item_background",
-            args: {},
-            callback: (r) => {
-                if (!r.exc) {
-                    frappe.msgprint("Item sync has started in background.");
-                }
+            callback: () => {
+                frappe.msgprint("Item sync started.");
+                setTimeout(() => refresh_all_counts(frm), 2000);
             }
         });
     },
 
+    sync_items_to_quickbooks(frm) {
+        const selected = (frm.doc.item_list || []).filter(r => r.__checked && !r.is_synced);
+        
+        if (selected.length === 0) {
+            // If no selection, sync all unsynced items (backward compatibility)
+            frappe.call({
+                method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_items_to_quickbooks_background",
+                callback: () => {
+                    frappe.msgprint("Item sync to QuickBooks started.");
+                    setTimeout(() => refresh_all_counts(frm), 2000);
+                }
+            });
+            return;
+        }
+        
+        frappe.call({
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.bulk_sync_items",
+            args: { docname: frm.doc.name, selected_items: selected },
+            freeze: true,
+            freeze_msg: __("Syncing Items..."),
+            callback: (r) => {
+                if (r.message && r.message.message) {
+                    frappe.msgprint(r.message.message);
+                }
+                // Refresh the list to update sync status
+                refresh_items(frm, false);
+            }
+        });
+    },
+
+    refresh_items(frm, show_message = true) {
+        frappe.call({
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.refresh_item_list",
+            args: { docname: frm.doc.name },
+            freeze: true,
+            freeze_msg: __("Fetching Items..."),
+            callback: () => {
+                // Reload document to get latest version
+                // Use setTimeout to ensure backend save is complete
+                setTimeout(() => {
+                    frm.reload_doc().then(() => {
+                        if (show_message) {
+                            frappe.msgprint("Items refreshed.");
+                        }
+                        setTimeout(() => refresh_all_counts(frm), 1000);
+                    }).catch(() => {
+                        // If reload fails due to timestamp mismatch, refresh field instead
+                        frm.refresh_field("item_list");
+                        if (show_message) {
+                            frappe.msgprint("Items refreshed.");
+                        }
+                    });
+                }, 100);
+            }
+        });
+    },
+
+    /* ---------------- Suppliers ---------------- */
+
     sync_suppliers(frm) {
         frappe.call({
             method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_supplier_background",
-            args: {},
-            callback: (r) => {
-                if (!r.exc) {
-                    frappe.msgprint("Supplier sync has started in background.");
-                }
+            callback: () => {
+                frappe.msgprint("Supplier sync started.");
+                setTimeout(() => refresh_all_counts(frm), 2000);
             }
         });
     },
 
     sync_suppliers_to_quickbooks(frm) {
-        frappe.call({
-            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_supplier_to_qbo_background",
-            args: {},
-            callback: (r) => {
-                if (!r.exc) {
-                    frappe.msgprint("Supplier sync has started in background.");
+        const selected = (frm.doc.supplier_list || []).filter(r => r.__checked && !r.is_synced);
+        
+        if (selected.length === 0) {
+            // If no selection, sync all unsynced suppliers (backward compatibility)
+            frappe.call({
+                method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_supplier_to_qbo_background",
+                callback: () => {
+                    frappe.msgprint("Supplier sync to QuickBooks started.");
+                    setTimeout(() => refresh_all_counts(frm), 2000);
                 }
-            }
-        });
-    },
-
-    // ✅ NEW: sync selected invoices from child table
-    sync_selected_sales_invoices(frm) {
-        if (frm.doc.sales_invoice_list && frm.doc.sales_invoice_list.length > 0) {
-            const selected_invoices = frm.doc.sales_invoice_list.filter((row) => row.__checked);
-
-            if (selected_invoices.length > 0) {
-                frappe.call({
-                    method: "quickbooks_integration.api.sync_selected_sales_invoices",
-                    args: {
-                        docname: frm.doc.name,
-                        selected_si: selected_invoices.map((row) => row.sales_invoice)
-                    },
-                    freeze: true,
-                    freeze_msg: __("Syncing selected Sales Invoices to QuickBooks..."),
-                    callback: (r) => {
-                        if (!r.exc) {
-                            frappe.msgprint(r.message || "Selected invoices synced successfully.");
-                            frm.reload_doc();
-                        }
-                    }
-                });
-            } else {
-                frappe.msgprint("Please select invoices to sync.", "Warning");
-            }
-        } else {
-            frappe.msgprint("No invoices available in the list.");
+            });
+            return;
         }
-    },
-
-    sync_items_to_quickbooks(frm) {
+        
         frappe.call({
-            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_items_to_quickbooks_background",
-            args: {},
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.bulk_sync_suppliers",
+            args: { docname: frm.doc.name, selected_suppliers: selected },
+            freeze: true,
+            freeze_msg: __("Syncing Suppliers..."),
             callback: (r) => {
-                if (!r.exc) {
-                    frappe.msgprint("Item sync to quickbooks has started in background.");
+                if (r.message && r.message.message) {
+                    frappe.msgprint(r.message.message);
                 }
+                refresh_suppliers(frm, false);
             }
         });
     },
+
+    refresh_suppliers(frm, show_message = true) {
+        frappe.call({
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.refresh_supplier_list",
+            args: { docname: frm.doc.name },
+            freeze: true,
+            freeze_msg: __("Fetching Suppliers..."),
+            callback: () => {
+                setTimeout(() => {
+                    frm.reload_doc().then(() => {
+                        if (show_message) {
+                            frappe.msgprint("Suppliers refreshed.");
+                        }
+                        setTimeout(() => refresh_all_counts(frm), 1000);
+                    }).catch(() => {
+                        frm.refresh_field("supplier_list");
+                        if (show_message) {
+                            frappe.msgprint("Suppliers refreshed.");
+                        }
+                    });
+                }, 100);
+            }
+        });
+    },
+
+    /* ---------------- Item Images ---------------- */
 
     sync_item_images(frm) {
         frappe.call({
             method: "quickbooks_integration.api.start_item_images_sync_background",
-            args: {},
-            callback: (r) => {
-                if (!r.exc) {
-                    frappe.msgprint("Item images sync from QuickBooks has started in background.");
-                }
+            callback: () => {
+                frappe.msgprint("Item images sync started.");
+                setTimeout(() => refresh_all_counts(frm), 2000);
             }
         });
     },
+
+    /* ---------------- Stock ---------------- */
 
     sync_stock(frm) {
         frappe.call({
             method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_stock_sync_background",
-            args: {},
-            callback: (r) => {
-                if (!r.exc) {
-                    frappe.msgprint("Stock sync and reconciliation from QuickBooks has started in background.");
-                }
+            callback: () => {
+                frappe.msgprint("Stock sync started.");
+                setTimeout(() => refresh_all_counts(frm), 2000);
             }
         });
     },
+    stock_sync_interval(frm) {
+        // Get the value directly from the field input element to ensure we have the selected value
+        const field = frm.fields_dict.stock_sync_interval;
+        if (!field) return;
+        
+        // Get value from the input element directly
+        const interval = field.get_value();
+        if (!interval) return;
+        
+        // Store the interval value to use after reload
+        const selectedInterval = interval;
+        
+        frappe.call({
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.update_stock_sync_cron_job",
+            args: {
+                docname: frm.doc.name,
+                interval: selectedInterval
+            },
+            freeze: true,
+            freeze_message: __("Updating stock sync schedule...")
+        })
+        .then(r => {
+            if (r?.message?.message) {
+                frappe.show_alert(
+                    {
+                        message: r.message.message,
+                        indicator: "green"
+                    },
+                    5
+                );
+            }
+    
+            // Reload the document to get the saved value from backend
+            frm.reload_doc().then(() => {
+                // Ensure the field shows the correct saved value
+                frm.set_value("stock_sync_interval", selectedInterval);
+                frm.refresh_field("stock_sync_interval");
+            });
+        })
+        .catch((error) => {
+            frappe.show_alert(
+                {
+                    message: __("Failed to update stock sync schedule."),
+                    indicator: "red"
+                },
+                5
+            );
+            // Reload to restore previous value on error
+            frm.reload_doc();
+        });
+    },
+    /* ---------------- Sales Orders ---------------- */
+
+    sync_sales_order(frm) {
+        const selected = (frm.doc.sales_order_list || []).filter(r => r.__checked && !r.is_synced);
+        
+        if (selected.length === 0) {
+            frappe.msgprint("Please select unsynced sales orders to sync.");
+            return;
+        }
+        
+        frappe.call({
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.bulk_sync_sales_orders",
+            args: { docname: frm.doc.name, selected_sales_orders: selected },
+            freeze: true,
+            freeze_msg: __("Syncing Sales Orders..."),
+            callback: (r) => {
+                if (r.message && r.message.message) {
+                    frappe.msgprint(r.message.message);
+                }
+                refresh_sales_orders(frm, false);
+            }
+        });
+    },
+
+    refresh_sales_orders(frm, show_message = true) {
+        frappe.call({
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.refresh_sales_order_list",
+            args: { docname: frm.doc.name },
+            freeze: true,
+            freeze_msg: __("Fetching Sales Orders..."),
+            callback: () => {
+                setTimeout(() => {
+                    frm.reload_doc().then(() => {
+                        if (show_message) {
+                            frappe.msgprint("Sales orders refreshed.");
+                        }
+                        setTimeout(() => refresh_all_counts(frm), 1000);
+                    }).catch(() => {
+                        frm.refresh_field("sales_order_list");
+                        if (show_message) {
+                            frappe.msgprint("Sales orders refreshed.");
+                        }
+                    });
+                }, 100);
+            }
+        });
+    },
+
+    /* ---------------- Sales Invoices ---------------- */
+
+    refresh_sales_invoices(frm, show_message = true) {
+        frappe.call({
+            method: "quickbooks_integration.api.refresh_sales_invoice_list",
+            args: { docname: frm.doc.name },
+            freeze: true,
+            freeze_msg: __("Fetching Sales Invoices..."),
+            callback: () => {
+                setTimeout(() => {
+                    frm.reload_doc().then(() => {
+                        if (show_message) {
+                            frappe.msgprint("Sales invoices refreshed.");
+                        }
+                        setTimeout(() => refresh_all_counts(frm), 1000);
+                    }).catch(() => {
+                        frm.refresh_field("sales_invoice_list");
+                        if (show_message) {
+                            frappe.msgprint("Sales invoices refreshed.");
+                        }
+                    });
+                }, 100);
+            }
+        });
+    },
+
+    sync_sales_invoices(frm) {
+        const selected = (frm.doc.sales_invoice_list || []).filter(r => r.__checked);
+
+        if (!selected.length) {
+            frappe.msgprint("Please select sales invoices.");
+            return;
+        }
+
+        frappe.call({
+            method: "quickbooks_integration.api.bulk_sync_invoices",
+            args: { docname: frm.doc.name, selected_invoices: selected },
+            freeze: true,
+            freeze_msg: __("Syncing Sales Invoices..."),
+            callback: (r) => {
+                if (r.message && r.message.message) {
+                    frappe.msgprint(r.message.message);
+                }
+                refresh_sales_invoices(frm, false);
+            }
+        });
+    },
+
+    /* ---------------- Purchase Invoices ---------------- */
+
+    refresh_purchase_invoices(frm, show_message = true) {
+        frappe.call({
+            method: "quickbooks_integration.api.refresh_purchase_invoices",
+            args: { docname: frm.doc.name },
+            freeze: true,
+            freeze_msg: __("Fetching Purchase Invoices..."),
+            callback: () => {
+                setTimeout(() => {
+                    frm.reload_doc().then(() => {
+                        if (show_message) {
+                            frappe.msgprint("Purchase invoices refreshed.");
+                        }
+                        setTimeout(() => refresh_all_counts(frm), 1000);
+                    }).catch(() => {
+                        frm.refresh_field("purchase_invoice_list");
+                        if (show_message) {
+                            frappe.msgprint("Purchase invoices refreshed.");
+                        }
+                    });
+                }, 100);
+            }
+        });
+    },
+
+    sync_purchase_invoices(frm) {
+        const selected = (frm.doc.purchase_invoice_list || []).filter(r => r.__checked);
+
+        if (!selected.length) {
+            frappe.msgprint("Please select purchase invoices.");
+            return;
+        }
+
+        frappe.call({
+            method: "quickbooks_integration.api.bulk_sync_purchase_invoices",
+            args: { docname: frm.doc.name, selected_invoices: selected },
+            freeze: true,
+            freeze_msg: __("Syncing Purchase Invoices..."),
+            callback: (r) => {
+                if (r.message && r.message.message) {
+                    frappe.msgprint(r.message.message);
+                }
+                refresh_purchase_invoices(frm, false);
+            }
+        });
+    },
+
+    /* ---------------- Item Groups ---------------- */
 
     sync_item_groups(frm) {
         frappe.call({
             method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_item_group_background",
-            args: {},
-            callback: (r) => {
-                if (!r.exc) {
-                    frappe.msgprint("Item Group sync from QuickBooks has started in background.");
-                }
+            callback: () => {
+                frappe.msgprint("Item Group sync started.");
+                setTimeout(() => refresh_all_counts(frm), 2000);
             }
         });
-    },
-
-
+    }
 });
+
+
+/* ---------------- Counts ---------------- */
+
+const refresh_all_counts = (frm) => {
+    frappe.call({
+        method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.refresh_all_counts",
+        args: { docname: frm.doc.name },
+        callback: (r) => {
+            if (!r.message) return;
+
+            Object.keys(r.message).forEach(field => {
+                if (frm.fields_dict[field]) {
+                    frm.set_value(field, r.message[field]);
+                }
+            });
+        }
+    });
+};

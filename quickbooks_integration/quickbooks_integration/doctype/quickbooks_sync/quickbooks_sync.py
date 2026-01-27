@@ -2114,3 +2114,671 @@ def create_stock_reconciliation(reconciliation_items, is_last_page=False):
             # Don't re-raise - continue with other warehouses instead of crashing the worker
             frappe.log_error(f"[QB SYNC] Skipping warehouse {warehouse} due to error, continuing with others...", "QuickBooks Stock Sync - Warehouse Skipped")
 
+
+
+@frappe.whitelist()
+def refresh_all_counts(docname: str):
+    """
+    Refresh all count fields for the QuickBooks Sync doctype.
+    Returns a dictionary with all counts.
+    """
+    doc = frappe.get_doc("QuickBooks Sync", docname)
+    
+    # Items count
+    items_count = frappe.db.count("Item")
+    doc.items_count = items_count
+    
+    # Suppliers count
+    suppliers_count = frappe.db.count("Supplier")
+    doc.suppliers_count = suppliers_count
+    
+    # Customers count
+    customers_count = frappe.db.count("Customer")
+    doc.customers_count = customers_count
+    
+    # Item Images count (items with images)
+    item_images_count = frappe.db.count("Item", {"image": ["!=", ""]})
+    doc.item_images_count = item_images_count
+    
+    # Sales Orders count (excluding cancelled)
+    sales_orders_count = frappe.db.count("Sales Order", {"docstatus": ["in", [0, 1]]})
+    doc.sales_orders_count = sales_orders_count
+    
+    # Sales Invoices count (excluding cancelled)
+    sales_invoices_count = frappe.db.count("Sales Invoice", {"docstatus": ["in", [0, 1]]})
+    doc.sales_invoices_count = sales_invoices_count
+    
+    # Purchase Invoices count (excluding cancelled)
+    purchase_invoices_count = frappe.db.count("Purchase Invoice", {"docstatus": ["in", [0, 1]]})
+    doc.purchase_invoices_count = purchase_invoices_count
+    
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+    
+    return {
+        "items_count": items_count,
+        "suppliers_count": suppliers_count,
+        "customers_count": customers_count,
+        "item_images_count": item_images_count,
+        "sales_orders_count": sales_orders_count,
+        "sales_invoices_count": sales_invoices_count,
+        "purchase_invoices_count": purchase_invoices_count
+    }
+
+@frappe.whitelist()
+def refresh_item_list(docname: str):
+    """
+    Refresh the Item List child table inside QuickBooks Sync doctype.
+    Marks items as synced if they have a custom_quickbooks_item_id.
+    """
+    doc = frappe.get_doc("QuickBooks Sync", docname)
+    
+    # Clear existing rows
+    doc.set("item_list", [])
+    
+    # Fetch all items with custom_quickbooks_item_id field
+    items = frappe.get_all(
+        "Item",
+        fields=["name", "custom_quickbooks_item_id"],
+        order_by="name asc"
+    )
+    
+    for item in items:
+        # Check if custom_quickbooks_item_id exists and is not empty
+        qb_id = item.get("custom_quickbooks_item_id")
+        has_qb_id = bool(qb_id and str(qb_id).strip())
+        
+        doc.append("item_list", {
+            "item_name": item.name,
+            "is_synced": 1 if has_qb_id else 0,
+        })
+    
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+    
+    return {"message": f"Refreshed {len(items)} items."}
+
+@frappe.whitelist()
+def refresh_supplier_list(docname: str):
+    """
+    Refresh the Supplier List child table inside QuickBooks Sync doctype.
+    Marks suppliers as synced if they have a custom_quickbooks_supplier_id.
+    """
+    doc = frappe.get_doc("QuickBooks Sync", docname)
+    
+    # Clear existing rows
+    doc.set("supplier_list", [])
+    
+    # Fetch all suppliers
+    suppliers = frappe.get_all(
+        "Supplier",
+        fields=["name"],
+        order_by="name asc"
+    )
+    
+    for supplier in suppliers:
+        has_qb_id = bool(frappe.db.get_value("Supplier", supplier.name, "custom_quickbooks_supplier_id"))
+        
+        doc.append("supplier_list", {
+            "supplier_name": supplier.name,
+            "is_synced": 1 if has_qb_id else 0,
+        })
+    
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+    
+    return {"message": f"Refreshed {len(suppliers)} suppliers."}
+
+@frappe.whitelist()
+def refresh_customer_list(docname: str):
+    """
+    Refresh the Customer List child table inside QuickBooks Sync doctype.
+    Marks customers as synced if they have a custom_quickbooks_customer_id.
+    """
+    doc = frappe.get_doc("QuickBooks Sync", docname)
+    
+    # Clear existing rows
+    doc.set("customer_list", [])
+    
+    # Fetch all customers
+    customers = frappe.get_all(
+        "Customer",
+        fields=["name"],
+        order_by="name asc"
+    )
+    
+    for customer in customers:
+        has_qb_id = bool(frappe.db.get_value("Customer", customer.name, "custom_quickbooks_customer_id"))
+        
+        doc.append("customer_list", {
+            "customer_name": customer.name,
+            "is_synced": 1 if has_qb_id else 0,
+        })
+    
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+    
+    return {"message": f"Refreshed {len(customers)} customers."}
+
+@frappe.whitelist()
+def refresh_sales_order_list(docname: str):
+    """
+    Refresh the Sales Order List child table inside QuickBooks Sync doctype.
+    Marks sales orders as synced if they have a quickbooks_sales_order_id.
+    Skips cancelled sales orders (docstatus = 2).
+    """
+    doc = frappe.get_doc("QuickBooks Sync", docname)
+    
+    # Clear existing rows
+    doc.set("sales_order_list", [])
+    
+    # Fetch sales orders but exclude cancelled
+    sales_orders = frappe.get_all(
+        "Sales Order",
+        fields=["name", "quickbooks_sales_order_id", "status", "docstatus"],
+        filters={"docstatus": ["in", [0, 1]]}   # Only Draft (0) + Submitted (1)
+    )
+    
+    for so in sales_orders:
+        has_qb_id = bool(so.quickbooks_sales_order_id)
+        
+        doc.append("sales_order_list", {
+            "sales_order_name": so.name,
+            "status": "Success" if has_qb_id else "Pending",
+            "is_synced": 1 if has_qb_id else 0,
+        })
+    
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+    
+    return {"message": f"Refreshed {len(sales_orders)} sales orders (excluding cancelled)."}
+
+@frappe.whitelist()
+def bulk_sync_items(docname: str, selected_items=None):
+    """
+    Sync selected items from ERPNext to QuickBooks.
+    Similar to bulk_sync_invoices but for items.
+    """
+    try:
+        doc = frappe.get_doc("QuickBooks Sync", docname)
+        
+        # If coming from frontend with __checked rows
+        if selected_items:
+            # Ensure list is parsed correctly from JSON
+            if isinstance(selected_items, str):
+                import json
+                selected_items = json.loads(selected_items)
+            
+            item_names = [d.get("item_name") for d in selected_items if d.get("item_name")]
+        else:
+            # fallback: all unsynced rows
+            item_names = [row.item_name for row in doc.item_list if not row.is_synced]
+        
+        if not item_names:
+            return {"message": "No items found for sync."}
+        
+        result = sync_selected_items(docname, item_names)
+        
+        return {
+            "message": (
+                f"📦 QuickBooks Item Sync Summary:\n"
+                f"✅ Synced: {len(result.get('synced', []))}\n"
+                f"❌ Failed: {len(result.get('failed', []))}\n"
+                f"⏭ Skipped: {len(result.get('skipped', []))}\n"
+                f"📦 Total Attempted: {len(item_names)}"
+            )
+        }
+    
+    except Exception:
+        frappe.log_error("Bulk Sync Items Error", frappe.get_traceback())
+        return {"message": "An error occurred while syncing items. Please check error logs."}
+
+@frappe.whitelist()
+def sync_selected_items(docname: str, selected_items: list):
+    """
+    Sync selected items to QuickBooks.
+    Already synced items will be skipped.
+    """
+    if not selected_items:
+        return {"synced": [], "failed": [], "skipped": []}
+    
+    from quickbooks_integration.api import create_item_on_quickbooks
+    
+    doc = frappe.get_doc("QuickBooks Sync", docname)
+    synced, failed, skipped = [], [], []
+    
+    for item_name in selected_items:
+        try:
+            # Check child row first
+            row = next((r for r in doc.item_list if r.item_name == item_name), None)
+            if not row:
+                skipped.append(item_name)
+                continue
+            
+            if row.is_synced:  # already synced, skip
+                skipped.append(item_name)
+                continue
+            
+            # Check if item already has QuickBooks ID
+            if frappe.db.get_value("Item", item_name, "custom_quickbooks_item_id"):
+                row.is_synced = 1
+                skipped.append(item_name)
+                continue
+            
+            # Sync item to QuickBooks
+            create_item_on_quickbooks(item_name)
+            
+            # Update row status
+            row.is_synced = 1
+            synced.append(item_name)
+            
+        except Exception as e:
+            failed.append(item_name)
+            frappe.log_error(f"Error syncing item {item_name}: {str(e)}", "QuickBooks Item Sync Error")
+    
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+    
+    return {"synced": synced, "failed": failed, "skipped": skipped}
+
+@frappe.whitelist()
+def bulk_sync_suppliers(docname: str, selected_suppliers=None):
+    """
+    Sync selected suppliers from ERPNext to QuickBooks.
+    """
+    try:
+        doc = frappe.get_doc("QuickBooks Sync", docname)
+        
+        # If coming from frontend with __checked rows
+        if selected_suppliers:
+            if isinstance(selected_suppliers, str):
+                import json
+                selected_suppliers = json.loads(selected_suppliers)
+            
+            supplier_names = [d.get("supplier_name") for d in selected_suppliers if d.get("supplier_name")]
+        else:
+            supplier_names = [row.supplier_name for row in doc.supplier_list if not row.is_synced]
+        
+        if not supplier_names:
+            return {"message": "No suppliers found for sync."}
+        
+        result = sync_selected_suppliers(docname, supplier_names)
+        
+        return {
+            "message": (
+                f"👥 QuickBooks Supplier Sync Summary:\n"
+                f"✅ Synced: {len(result.get('synced', []))}\n"
+                f"❌ Failed: {len(result.get('failed', []))}\n"
+                f"⏭ Skipped: {len(result.get('skipped', []))}\n"
+                f"📦 Total Attempted: {len(supplier_names)}"
+            )
+        }
+    
+    except Exception:
+        frappe.log_error("Bulk Sync Suppliers Error", frappe.get_traceback())
+        return {"message": "An error occurred while syncing suppliers. Please check error logs."}
+
+@frappe.whitelist()
+def sync_selected_suppliers(docname: str, selected_suppliers: list):
+    """
+    Sync selected suppliers to QuickBooks.
+    """
+    if not selected_suppliers:
+        return {"synced": [], "failed": [], "skipped": []}
+    
+    import requests
+    from frappe import _
+    
+    doc = frappe.get_doc("QuickBooks Sync", docname)
+    synced, failed, skipped = [], [], []
+    
+    settings = frappe.get_single("QuickBooks Settings")
+    if not (settings.enable and settings.allow_supplier_sync_to_quickbooks):
+        frappe.throw(_("Please enable Supplier sync in QuickBooks Settings"))
+    
+    url = f"{settings.base_url.strip().rstrip('/')}/v3/company/{settings.quickbooks_company_id}/vendor?minorversion={settings.minor_version or '75'}"
+    headers = {
+        "Authorization": f"Bearer {settings.access_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    
+    for supplier_name in selected_suppliers:
+        try:
+            row = next((r for r in doc.supplier_list if r.supplier_name == supplier_name), None)
+            if not row:
+                skipped.append(supplier_name)
+                continue
+            
+            if row.is_synced:
+                skipped.append(supplier_name)
+                continue
+            
+            # Check if already synced
+            if frappe.db.get_value("Supplier", supplier_name, "custom_quickbooks_supplier_id"):
+                row.is_synced = 1
+                skipped.append(supplier_name)
+                continue
+            
+            supplier = frappe.get_doc("Supplier", supplier_name)
+            vendor_payload = {
+                "DisplayName": supplier.supplier_name,
+                "CompanyName": supplier.supplier_name,
+                "PrintOnCheckName": supplier.supplier_name
+            }
+            
+            res = requests.post(url, headers=headers, json=vendor_payload, timeout=30)
+            res.raise_for_status()
+            data = res.json()
+            
+            if "Vendor" in data:
+                qbo_id = data["Vendor"].get("Id")
+                frappe.db.set_value("Supplier", supplier_name, "custom_quickbooks_supplier_id", qbo_id)
+                row.is_synced = 1
+                synced.append(supplier_name)
+            else:
+                failed.append(supplier_name)
+                
+        except Exception as e:
+            failed.append(supplier_name)
+            frappe.log_error(f"Error syncing supplier {supplier_name}: {str(e)}", "QuickBooks Supplier Sync Error")
+    
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+    
+    return {"synced": synced, "failed": failed, "skipped": skipped}
+
+@frappe.whitelist()
+def bulk_sync_customers(docname: str, selected_customers=None):
+    """
+    Sync selected customers from ERPNext to QuickBooks.
+    """
+    try:
+        doc = frappe.get_doc("QuickBooks Sync", docname)
+        
+        if selected_customers:
+            if isinstance(selected_customers, str):
+                import json
+                selected_customers = json.loads(selected_customers)
+            
+            customer_names = [d.get("customer_name") for d in selected_customers if d.get("customer_name")]
+        else:
+            customer_names = [row.customer_name for row in doc.customer_list if not row.is_synced]
+        
+        if not customer_names:
+            return {"message": "No customers found for sync."}
+        
+        result = sync_selected_customers(docname, customer_names)
+        
+        return {
+            "message": (
+                f"👤 QuickBooks Customer Sync Summary:\n"
+                f"✅ Synced: {len(result.get('synced', []))}\n"
+                f"❌ Failed: {len(result.get('failed', []))}\n"
+                f"⏭ Skipped: {len(result.get('skipped', []))}\n"
+                f"📦 Total Attempted: {len(customer_names)}"
+            )
+        }
+    
+    except Exception:
+        frappe.log_error("Bulk Sync Customers Error", frappe.get_traceback())
+        return {"message": "An error occurred while syncing customers. Please check error logs."}
+
+@frappe.whitelist()
+def sync_selected_customers(docname: str, selected_customers: list):
+    """
+    Sync selected customers to QuickBooks.
+    """
+    if not selected_customers:
+        return {"synced": [], "failed": [], "skipped": []}
+    
+    import requests
+    from frappe import _
+    
+    doc = frappe.get_doc("QuickBooks Sync", docname)
+    synced, failed, skipped = [], [], []
+    
+    settings = frappe.get_doc("QuickBooks Settings")
+    minor_version = settings.minor_version or "75"
+    realm_id = settings.quickbooks_company_id
+    access_token = settings.access_token
+    base_url = settings.base_url.strip()
+    
+    if not base_url.startswith("http"):
+        base_url = "https://" + base_url
+    
+    endpoint = f"{base_url}/v3/company/{realm_id}/customer?minorversion={minor_version}"
+    
+    for customer_name in selected_customers:
+        try:
+            row = next((r for r in doc.customer_list if r.customer_name == customer_name), None)
+            if not row:
+                skipped.append(customer_name)
+                continue
+            
+            if row.is_synced:
+                skipped.append(customer_name)
+                continue
+            
+            # Check if already synced
+            if frappe.db.get_value("Customer", customer_name, "custom_quickbooks_customer_id"):
+                row.is_synced = 1
+                skipped.append(customer_name)
+                continue
+            
+            customer = frappe.get_doc("Customer", customer_name)
+            email = customer.email_id or get_primary_contact_email(customer_name)
+            address = None
+            
+            if customer.customer_primary_address:
+                address = frappe.get_doc("Address", customer.customer_primary_address)
+            else:
+                address = get_billing_address_for_customer(customer_name)
+            
+            payload = {
+                "DisplayName": customer.customer_name,
+                "PrimaryEmailAddr": {"Address": email} if email else None,
+                "PrimaryPhone": {"FreeFormNumber": customer.mobile_no} if customer.get("mobile_no") else None,
+                "BillAddr": {
+                    "Line1": address.address_line1 if address else "",
+                    "City": address.city if address else "",
+                    "CountrySubDivisionCode": address.state if address else "",
+                    "PostalCode": address.pincode if address else "",
+                    "Country": address.country if address else ""
+                } if address else None,
+                "Notes": f"Imported from ERPNext Customer: {customer_name}"
+            }
+            
+            payload = {k: v for k, v in payload.items() if v}
+            
+            res = requests.post(
+                endpoint,
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "Accept": "application/json",
+                    "Content-Type": "application/json"
+                },
+                json=payload
+            )
+            
+            if res.ok:
+                quickbooks_customer_id = res.json().get('Customer', {}).get('Id')
+                if quickbooks_customer_id:
+                    frappe.db.set_value("Customer", customer_name, "custom_quickbooks_customer_id", quickbooks_customer_id)
+                    frappe.db.set_value("Customer", customer_name, "custom_is_customer_synced", 1)
+                    row.is_synced = 1
+                    synced.append(customer_name)
+                else:
+                    failed.append(customer_name)
+            else:
+                failed.append(customer_name)
+                
+        except Exception as e:
+            failed.append(customer_name)
+            frappe.log_error(f"Error syncing customer {customer_name}: {str(e)}", "QuickBooks Customer Sync Error")
+    
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+    
+    return {"synced": synced, "failed": failed, "skipped": skipped}
+
+@frappe.whitelist()
+def bulk_sync_sales_orders(docname: str, selected_sales_orders=None):
+    """
+    Sync selected sales orders from ERPNext to QuickBooks.
+    """
+    try:
+        doc = frappe.get_doc("QuickBooks Sync", docname)
+        
+        if selected_sales_orders:
+            if isinstance(selected_sales_orders, str):
+                import json
+                selected_sales_orders = json.loads(selected_sales_orders)
+            
+            so_names = [d.get("sales_order_name") for d in selected_sales_orders if d.get("sales_order_name")]
+        else:
+            so_names = [row.sales_order_name for row in doc.sales_order_list if not row.is_synced]
+        
+        if not so_names:
+            return {"message": "No sales orders found for sync."}
+        
+        result = sync_selected_sales_orders(docname, so_names)
+        
+        return {
+            "message": (
+                f"📋 QuickBooks Sales Order Sync Summary:\n"
+                f"✅ Synced: {len(result.get('synced', []))}\n"
+                f"❌ Failed: {len(result.get('failed', []))}\n"
+                f"⏭ Skipped: {len(result.get('skipped', []))}\n"
+                f"📦 Total Attempted: {len(so_names)}"
+            )
+        }
+    
+    except Exception:
+        frappe.log_error("Bulk Sync Sales Orders Error", frappe.get_traceback())
+        return {"message": "An error occurred while syncing sales orders. Please check error logs."}
+
+@frappe.whitelist()
+def sync_selected_sales_orders(docname: str, selected_sales_orders: list):
+    """
+    Sync selected sales orders to QuickBooks.
+    """
+    if not selected_sales_orders:
+        return {"synced": [], "failed": [], "skipped": []}
+    
+    doc = frappe.get_doc("QuickBooks Sync", docname)
+    synced, failed, skipped = [], [], []
+    
+    for so_name in selected_sales_orders:
+        try:
+            row = next((r for r in doc.sales_order_list if r.sales_order_name == so_name), None)
+            if not row:
+                skipped.append(so_name)
+                continue
+            
+            if row.is_synced:
+                skipped.append(so_name)
+                continue
+            
+            # Check if already synced
+            if frappe.db.get_value("Sales Order", so_name, "quickbooks_sales_order_id"):
+                row.is_synced = 1
+                row.status = "Success"
+                skipped.append(so_name)
+                continue
+            
+            # Sync sales order to QuickBooks
+            result = sync_sales_order_to_quickbooks(so_name)
+            
+            if result and result.get("id"):
+                row.status = "Success"
+                row.is_synced = 1
+                synced.append(so_name)
+            else:
+                row.status = "Failed"
+                failed.append(so_name)
+                
+        except Exception as e:
+            row.status = "Failed"
+            failed.append(so_name)
+            frappe.log_error(f"Error syncing sales order {so_name}: {str(e)}", "QuickBooks Sales Order Sync Error")
+    
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+    
+    return {"synced": synced, "failed": failed, "skipped": skipped}
+
+@frappe.whitelist()
+def update_stock_sync_cron_job(docname: str, interval: str | None = None):
+    """
+    Create or update Scheduled Job Type for QuickBooks stock sync.
+    """
+
+    doc = frappe.get_doc("QuickBooks Sync", docname)
+
+    interval_text = (interval or doc.stock_sync_interval or "").strip()
+    if not interval_text:
+        frappe.throw("Stock Sync Interval is not set.")
+
+    interval_map = {
+        "1 Hour": 1,
+        "3 Hours": 3,
+        "6 Hours": 6,
+        "12 Hours": 12,
+        "24 Hours": 24,
+    }
+
+    hours = interval_map.get(interval_text)
+    if not hours:
+        frappe.throw(f"Invalid stock sync interval: {interval_text}")
+
+    cron_expression = f"0 */{hours} * * *"
+
+    method_path = (
+        "quickbooks_integration.quickbooks_integration.doctype."
+        "quickbooks_sync.quickbooks_sync.start_stock_sync_background"
+    )
+
+    # 🔑 ALWAYS lookup by method
+    job_name = frappe.db.get_value(
+        "Scheduled Job Type",
+        {"method": method_path},
+        "name"
+    )
+
+    if job_name:
+        job = frappe.get_doc("Scheduled Job Type", job_name)
+
+        job.cron_expression = cron_expression
+        job.frequency = "Cron"
+        job.enabled = 1
+        job.save(ignore_permissions=True)
+
+        status = "updated"
+    else:
+        job = frappe.new_doc("Scheduled Job Type")
+
+        # DO NOT set name manually
+        job.method = method_path
+        job.cron_expression = cron_expression
+        job.frequency = "All"  # temporary safe value
+        job.enabled = 1
+
+        job.insert(ignore_permissions=True)
+
+        # Switch to Cron AFTER insert
+        job.db_set("frequency", "Cron")
+        job.db_set("enabled", 1)
+
+        status = "created"
+
+    # Save the stock_sync_interval value to the document
+    doc.stock_sync_interval = interval_text
+    doc.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    return {
+        "status": status,
+        "message": f"Stock sync scheduled every {interval_text.lower()}",
+        "cron": cron_expression,
+    }
