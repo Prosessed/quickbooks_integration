@@ -1087,6 +1087,28 @@
    "translatable": 0,
    "unique": 0,
    "width": null
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "custom_quickbooks_details",
+   "fieldtype": "Section Break",
+   "label": "Integration / Master Data",
+   "insert_after": "project",
+   "module": "Quickbooks Integration"
+  },
+  {
+   "dt": "Sales Order",
+   "fieldname": "quickbooks_sales_order_id",
+   "fieldtype": "Data",
+   "label": "QuickBooks Sales Order ID",
+   "insert_after": "custom_quickbooks_details",
+   "read_only": 1,
+   "reqd": 0,
+   "in_list_view": 0,
+   "in_standard_filter": 0,
+   "print_hide": 0,
+   "translatable": 1,
+   "module": "Quickbooks Integration"
   }
  ],
  "custom_perms": [],

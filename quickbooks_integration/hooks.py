@@ -154,7 +154,7 @@ doctype_js = {
 scheduler_events = {
 	"cron": {
 		"0 */12 * * *": [
-			"quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_stock_from_quickbooks"
+			"quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_stock_sync_background"
 		]
 	}
 }
@@ -236,6 +236,9 @@ doc_events = {
     "Purchase Invoice": {
         "on_submit": "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_purchase_invoice_to_quickbooks",
         "on_cancel": "quickbooks_integration.api.sync_purchase_invoice_cancellation"
+    },
+    "Sales Order": {
+        "on_submit": "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.handle_sales_order_submit"
     }
 }
 

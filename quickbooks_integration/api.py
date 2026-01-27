@@ -132,395 +132,694 @@ def refresh_quickbooks_access_token():
 
 
 
+# @frappe.whitelist()
+# def fetch_quickbooks_customer_statement(**kwargs):
+#     """
+#     Fetch the Customer Balance Detail report from QuickBooks and return it in ERP-style format.
+#     """
+
+#     def normalize_key(raw_key, fallback):
+#         key = raw_key or fallback or ""
+#         return key.strip().lower().replace(" ", "_").replace("*", "")
+
+#     def get_column_keys(report_json):
+#         keys = []
+#         columns_data = report_json.get("Columns", {})
+        
+#         # Handle different column structures
+#         if isinstance(columns_data, dict):
+#             columns = columns_data.get("Column", [])
+#             if not columns:
+#                 columns = columns_data.get("column", [])  # Try lowercase
+#         elif isinstance(columns_data, list):
+#             columns = columns_data
+#         else:
+#             columns = []
+            
+#         if not columns:
+#             # Fallback: try to infer from header
+#             header = report_json.get("Header", {})
+#             if header:
+#                 # Use common column names for Customer Balance Detail report
+#                 keys = ["date", "transaction_type", "doc_num", "customer", "due_date", "amount", "balance"]
+        
+#         for idx, column in enumerate(columns):
+#             if isinstance(column, dict):
+#                 meta = None
+#                 metadata = column.get("MetaData", [])
+#                 if metadata:
+#                     for md in metadata:
+#                         if isinstance(md, dict) and md.get("Name") == "ColKey":
+#                             meta = md.get("Value")
+#                             break
+                
+#                 col_title = column.get("ColTitle") or column.get("col_title") or column.get("title") or ""
+#                 col_type = column.get("ColType") or column.get("col_type") or ""
+                
+#                 # Normalize the key
+#                 normalized = normalize_key(meta, col_title or f"col_{idx}")
+                
+#                 # Map common QuickBooks column titles to standard names
+#                 col_lower = col_title.lower()
+#                 if "date" in col_lower and "due" not in col_lower:
+#                     normalized = "date"
+#                 elif "due" in col_lower:
+#                     normalized = "due_date"
+#                 elif "type" in col_lower or "transaction" in col_lower:
+#                     normalized = "transaction_type"
+#                 elif "num" in col_lower or "doc" in col_lower or "ref" in col_lower:
+#                     normalized = "doc_num"
+#                 elif "amount" in col_lower and "balance" not in col_lower:
+#                     normalized = "amount"
+#                 elif "balance" in col_lower:
+#                     normalized = "balance"
+#                 elif "memo" in col_lower or "description" in col_lower:
+#                     normalized = "memo"
+                
+#                 keys.append(normalized)
+#             else:
+#                 keys.append(f"col_{idx}")
+                
+#         return keys if keys else [f"col_{i}" for i in range(10)]  # Default fallback
+
+#     def coldata_to_dict(coldata, keys):
+#         record = {}
+#         if not coldata:
+#             return record
+            
+#         for idx, col in enumerate(coldata):
+#             if not isinstance(col, dict):
+#                 continue
+                
+#             key = keys[idx] if idx < len(keys) else f"col_{idx}"
+            
+#             # Extract value - handle different formats
+#             value = col.get("value")
+#             if value is None:
+#                 value = col.get("Value")  # Try capitalized
+#             if value is None:
+#                 value = col.get("text") or col.get("Text")
+            
+#             if value not in (None, ""):
+#                 # Clean up value - remove currency symbols and whitespace
+#                 if isinstance(value, str):
+#                     value = value.strip()
+#                 record[key] = value
+                
+#             # Extract ID if present (this is crucial for transaction type detection)
+#             col_id = col.get("id") or col.get("Id") or col.get("ID")
+#             if col_id:
+#                 record[f"{key}_id"] = col_id
+#                 # Also store as generic id for transaction identification
+#                 if idx == 0:  # Usually first column has transaction ID
+#                     record["transaction_id"] = col_id
+                    
+#             # Extract href if present (contains transaction type info)
+#             href = col.get("href") or col.get("Href")
+#             if href:
+#                 record[f"{key}_href"] = href
+#                 # Extract transaction type from href if available
+#                 if "invoice" in href.lower() and "transaction_type" not in record:
+#                     record["transaction_type"] = "invoice"
+#                 elif "creditmemo" in href.lower() or "credit" in href.lower():
+#                     record["transaction_type"] = "creditmemo"
+#                 elif "payment" in href.lower():
+#                     record["transaction_type"] = "payment"
+                
+#         return record
+
+#     def flatten_rows(row_items, keys, bucket, summary_bucket):
+#         if not row_items:
+#             return
+            
+#         # Handle both list and single row
+#         if not isinstance(row_items, list):
+#             row_items = [row_items]
+            
+#         for row in row_items:
+#             if not isinstance(row, dict):
+#                 continue
+                
+#             # Handle both lowercase and capitalized type values
+#             row_type = (row.get("type") or "").lower()
+#             col_data = row.get("ColData", [])
+            
+#             # Process data rows (actual transactions)
+#             if row_type == "data":
+#                 record = coldata_to_dict(col_data, keys)
+#                 if record:  # Only add if we have data
+#                     bucket.append(record)
+#             # Process summary rows (totals, opening balance, etc.)
+#             elif row_type == "summary":
+#                 record = coldata_to_dict(col_data, keys)
+#                 if record:  # Only add if we have data
+#                     summary_bucket.append(record)
+#             # If type is not specified but has ColData, treat as data row
+#             elif col_data and not row_type:
+#                 record = coldata_to_dict(col_data, keys)
+#                 if record:
+#                     bucket.append(record)
+
+#             # Recursively process nested rows
+#             nested_rows = None
+#             if row.get("Rows"):
+#                 nested_data = row["Rows"]
+#                 if isinstance(nested_data, dict):
+#                     nested_rows = nested_data.get("Row", [])
+#                 elif isinstance(nested_data, list):
+#                     nested_rows = nested_data
+#             elif row.get("Row"):
+#                 nested_rows = row.get("Row")
+                
+#             if nested_rows:
+#                 flatten_rows(nested_rows, keys, bucket, summary_bucket)
+
+#     def resolve_erp_customer(identifier):
+#         if not identifier:
+#             return None
+
+#         filters = {"custom_quickbooks_customer_id": identifier}
+#         doc = frappe.db.get_value("Customer", filters, ["name", "customer_name", "custom_quickbooks_customer_id"], as_dict=True)
+#         if doc:
+#             return doc
+
+#         if frappe.db.exists("Customer", identifier):
+#             return frappe.db.get_value("Customer", identifier, ["name", "customer_name", "custom_quickbooks_customer_id"], as_dict=True)
+
+#         return None
+
+#     def get_contact_details(erp_customer):
+#         if not erp_customer:
+#             return {"contact_name": None, "phone": None, "email": None, "address": None}
+
+#         contact_name = None
+#         phone = None
+#         email = None
+#         address_text = None
+
+#         primary_contact = frappe.db.get_value(
+#             "Dynamic Link",
+#             {
+#                 "link_doctype": "Customer",
+#                 "link_name": erp_customer.name,
+#                 "parenttype": "Contact",
+#             },
+#             "parent",
+#         )
+
+#         if primary_contact:
+#             contact_doc = frappe.get_doc("Contact", primary_contact)
+#             contact_name = contact_doc.first_name or contact_doc.name
+#             phone = contact_doc.mobile_no or contact_doc.phone
+#             email = contact_doc.email_id
+
+#         address_link = frappe.db.get_value(
+#             "Dynamic Link",
+#             {
+#                 "link_doctype": "Customer",
+#                 "link_name": erp_customer.name,
+#                 "parenttype": "Address",
+#             },
+#             "parent",
+#         )
+
+#         if address_link:
+#             address_doc = frappe.get_doc("Address", address_link)
+#             address_text = ", ".join(filter(None, [address_doc.address_line1, address_doc.city, address_doc.country]))
+
+#         return {
+#             "contact_name": contact_name,
+#             "phone": phone,
+#             "email": email,
+#             "address": address_text,
+#         }
+
+#     def build_erp_response(report_json, customer_info, contact_info, start_date, end_date):
+#         column_keys = get_column_keys(report_json)
+#         transactions, summaries = [], []
+        
+#         # Handle different Rows structures from QuickBooks API
+#         rows_data = report_json.get("Rows", {})
+#         if not rows_data:
+#             rows_data = report_json.get("rows", {})  # Try lowercase
+        
+#         # Extract Row array from Rows container
+#         row_items = None
+#         if isinstance(rows_data, dict):
+#             row_items = rows_data.get("Row", [])
+#             if not row_items:
+#                 row_items = rows_data.get("row", [])  # Try lowercase
+#         elif isinstance(rows_data, list):
+#             row_items = rows_data
+        
+#         if not row_items:
+#             # If no rows found, log for debugging
+#             frappe.logger().debug(f"[QuickBooks] No rows found in report. Structure: {list(report_json.keys())}")
+        
+#         flatten_rows(row_items or [], column_keys, transactions, summaries)
+        
+#         # Debug logging (can be removed in production if needed)
+#         frappe.logger().debug(f"[QuickBooks] Parsed {len(transactions)} transactions, {len(summaries)} summaries")
+#         if transactions:
+#             frappe.logger().debug(f"[QuickBooks] Sample transaction keys: {list(transactions[0].keys())}")
+        
+#         currency = report_json.get("Header", {}).get("Currency") or "AUD"
+
+#         def pick(record, *keys):
+#             for key in keys:
+#                 if key in record and record[key] not in (None, ""):
+#                     return record[key]
+#             return ""
+
+#         invoices, credit_notes, payments = [], [], []
+#         opening_balance = 0.0
+
+#         # Process summary rows first to get opening balance
+#         for summary in summaries:
+#             summary_type = (pick(summary, "col_0", "col_1") or "").lower()
+#             balance_value = flt(pick(summary, "balance", "open_balance", "amount", "col_2", "col_3", "col_4"))
+            
+#             # Look for opening balance in summary rows
+#             if "opening" in summary_type or "beginning" in summary_type:
+#                 opening_balance = balance_value
+#             elif "total" in summary_type and balance_value and opening_balance == 0:
+#                 # Sometimes opening balance is in a total row
+#                 opening_balance = balance_value
+
+#         # Process transactions
+#         for txn in transactions:
+#             # Try multiple field name variations for transaction type
+#             # First check if we extracted it from href
+#             txn_type_raw = pick(txn, "transaction_type", "txn_type", "type", "col_0", "col_1") or ""
+#             txn_type = str(txn_type_raw).lower().strip()
+            
+#             # Try multiple field name variations for document number
+#             doc_num = pick(txn, "doc_num", "docnum", "txn_id", "num", "transaction_id", "col_1", "col_2", "col_0")
+            
+#             # Try multiple field name variations for dates
+#             tx_date = pick(txn, "tx_date", "date", "transaction_date", "col_0", "col_1")
+#             due_date = pick(txn, "due_date", "due", "col_2", "col_3")
+            
+#             memo = pick(txn, "memo", "cust_msg", "description", "col_4", "col_5")
+            
+#             # Try multiple field name variations for amounts
+#             # In Customer Balance Detail report, amounts are typically in later columns
+#             amount = flt(pick(txn, "subt_amount", "amount", "total_amount", "col_3", "col_4", "col_5", "col_6"))
+#             balance = flt(pick(txn, "balance", "open_balance", "amount_due", "outstanding_amount", "col_4", "col_5", "col_6", "col_7"))
+            
+#             # If amount is 0 but balance has value, use balance
+#             if amount == 0 and balance != 0:
+#                 amount = abs(balance)
+            
+#             # Skip if no meaningful data (but be more lenient - if we have a date or doc_num, include it)
+#             if not doc_num and amount == 0 and balance == 0 and not tx_date:
+#                 continue
+
+#             # Determine transaction type more reliably
+#             # Check href first (most reliable)
+#             for key in txn.keys():
+#                 if "href" in key.lower() and txn[key]:
+#                     href = str(txn[key]).lower()
+#                     if "invoice" in href and not txn_type:
+#                         txn_type = "invoice"
+#                     elif ("creditmemo" in href or "credit" in href) and not txn_type:
+#                         txn_type = "creditmemo"
+#                     elif "payment" in href and not txn_type:
+#                         txn_type = "payment"
+#                     break
+            
+#             # If still no type, try to infer from document number or transaction type field
+#             if not txn_type or txn_type == "":
+#                 # Check transaction type column values
+#                 type_value = str(pick(txn, "col_0", "col_1", "col_2") or "").lower()
+#                 if "invoice" in type_value or "inv" in type_value:
+#                     txn_type = "invoice"
+#                 elif "credit" in type_value or "memo" in type_value:
+#                     txn_type = "creditmemo"
+#                 elif "payment" in type_value or "pay" in type_value:
+#                     txn_type = "payment"
+#                 # Try to infer from document number
+#                 elif doc_num:
+#                     doc_str = str(doc_num).lower()
+#                     if "invoice" in doc_str or "inv" in doc_str or "si-" in doc_str:
+#                         txn_type = "invoice"
+#                     elif "credit" in doc_str or "cn-" in doc_str or "cm-" in doc_str:
+#                         txn_type = "creditmemo"
+#                     elif "payment" in doc_str or "pay-" in doc_str or "pmt" in doc_str:
+#                         txn_type = "payment"
+            
+#             # If we still can't determine type, check amount sign
+#             # Invoices are typically positive, payments negative, credit memos can be either
+#             if not txn_type or txn_type == "":
+#                 if amount < 0:
+#                     txn_type = "payment"
+#                 elif amount > 0:
+#                     # Default to invoice if positive (most common)
+#                     txn_type = "invoice"
+
+#             # Categorize transactions
+#             if txn_type in ("invoice", "salesreceipt", "sales_receipt", "inv", "sales invoice"):
+#                 outstanding = abs(balance) if balance != 0 else abs(amount)
+#                 invoices.append({
+#                     "invoice_id": doc_num or "",
+#                     "posting_date": tx_date or "",
+#                     "due_date": due_date or "",
+#                     "grand_total": abs(amount) if amount != 0 else abs(outstanding),
+#                     "outstanding_amount": outstanding,
+#                     "status": "Paid" if outstanding == 0 else "Unpaid",
+#                     "currency": currency,
+#                     "payment_status": "Paid" if outstanding == 0 else "Unpaid",
+#                 })
+#             elif txn_type in ("creditmemo", "credit_memo", "credit", "credit memo", "cm"):
+#                 remaining_credit = abs(balance) if balance != 0 else abs(amount)
+#                 credit_notes.append({
+#                     "credit_note_no": doc_num or "",
+#                     "posting_date": tx_date or "",
+#                     "status": "Closed" if remaining_credit == 0 else "Open",
+#                     "total": abs(amount) if amount != 0 else abs(remaining_credit),
+#                     "remaining_credit": remaining_credit,
+#                     "currency": currency,
+#                 })
+#             elif txn_type in ("payment", "receivepayment", "sales_payment", "payment received", "pmt"):
+#                 # Payments are typically negative in QuickBooks
+#                 paid_amount = abs(amount) if amount != 0 else abs(balance)
+#                 payments.append({
+#                     "payment_id": doc_num or "",
+#                     "posting_date": tx_date or "",
+#                     "paid_amount": paid_amount,
+#                     "received_amount": paid_amount,
+#                     "payment_type": "Receive",
+#                     "mode_of_payment": pick(txn, "ship_via", "payment_method"),
+#                     "reference_no": memo,
+#                 })
+#             else:
+#                 # If we can't categorize, log it but don't skip (might be a new transaction type)
+#                 frappe.logger().debug(f"[QuickBooks] Unrecognized transaction type: {txn_type}, doc_num: {doc_num}, amount: {amount}")
+#                 # Default to invoice for unknown types with positive amounts
+#                 if amount > 0:
+#                     outstanding = abs(balance) if balance != 0 else abs(amount)
+#                     invoices.append({
+#                         "invoice_id": doc_num or "",
+#                         "posting_date": tx_date or "",
+#                         "due_date": due_date or "",
+#                         "grand_total": abs(amount) if amount != 0 else abs(outstanding),
+#                         "outstanding_amount": outstanding,
+#                         "status": "Paid" if outstanding == 0 else "Unpaid",
+#                         "currency": currency,
+#                         "payment_status": "Paid" if outstanding == 0 else "Unpaid",
+#                     })
+
+#         # Calculate totals
+#         total_invoices = sum(flt(inv["grand_total"]) for inv in invoices)
+#         total_credit_notes = sum(flt(note["total"]) for note in credit_notes)
+#         total_payments = sum(flt(pay["paid_amount"]) for pay in payments)
+        
+#         # Debug logging
+#         frappe.logger().debug(
+#             f"[QuickBooks] Categorized: {len(invoices)} invoices, {len(credit_notes)} credit notes, "
+#             f"{len(payments)} payments from {len(transactions)} total transactions"
+#         )
+        
+#         # Calculate closing balance: opening + invoices - credit notes - payments
+#         closing_balance = opening_balance + total_invoices - total_credit_notes - total_payments
+
+#         return {
+#             "status": "success",
+#             "customer": (customer_info.name if customer_info else None),
+#             "customer_name": (customer_info.customer_name if customer_info else report_json.get("Header", {}).get("Customer")),
+#             "company": frappe.defaults.get_global_default("company"),
+#             "from_date": start_date,
+#             "to_date": end_date,
+#             "contact_details": contact_info,
+#             "invoices": invoices,
+#             "credit_notes": credit_notes,
+#             "payments": payments,
+#             "summary": {
+#                 "currency": currency,
+#                 "opening_balance": opening_balance,
+#                 "total_invoices": total_invoices,
+#                 "total_payments": total_payments * -1,
+#                 "credit_notes": total_credit_notes * -1,
+#                 "closing_balance": closing_balance,
+#             },
+#         }
+
+#     try:
+#         refresh_quickbooks_access_token()
+#     except Exception:
+#         frappe.logger().warning("[QuickBooks] Unable to refresh access token, attempting with existing token.")
+
+#     settings = frappe.get_single("QuickBooks Settings")
+
+#     if not settings.enable:
+#         frappe.throw(_("QuickBooks integration is disabled. Please enable it in QuickBooks Settings."))
+
+#     access_token = settings.access_token
+#     realm_id = settings.quickbooks_company_id
+#     base_url = (settings.base_url or "").strip().rstrip("/")
+
+#     if not access_token or not realm_id or not base_url:
+#         frappe.throw(_("QuickBooks settings are incomplete. Please provide access token, company ID, and base URL."))
+
+#     if not base_url.startswith("http"):
+#         base_url = f"https://{base_url}"
+
+#     allowed_params = [
+#         "customer",
+#         "shipvia",
+#         "term",
+#         "end_duedate",
+#         "start_duedate",
+#         "custom1",
+#         "sort_by",
+#         "arpaid",
+#         "report_date",
+#         "sort_order",
+#         "aging_method",
+#         "department",
+#         "columns",
+#     ]
+
+#     request_params = {}
+#     form_dict = frappe._dict(frappe.form_dict or {})
+
+#     for param in allowed_params:
+#         value = kwargs.get(param, form_dict.get(param))
+#         if value in (None, "", []):
+#             continue
+#         request_params[param] = value
+
+#     request_params["minorversion"] = settings.minor_version or "75"
+
+#     customer_identifier = request_params.get("customer") or ""
+#     start_date = request_params.get("start_duedate")
+#     end_date = request_params.get("end_duedate")
+
+#     if not customer_identifier:
+#         frappe.throw(_("Customer parameter is required to fetch the statement."))
+
+#     erp_customer = resolve_erp_customer(customer_identifier)
+#     contact_details = get_contact_details(erp_customer)
+
+#     query_string = urlencode(request_params, doseq=True)
+#     endpoint = f"{base_url}/v3/company/{realm_id}/reports/CustomerBalanceDetail"
+#     url = f"{endpoint}?{query_string}" if query_string else endpoint
+
+#     headers = {
+#         "Authorization": f"Bearer {access_token}",
+#         "Accept": "application/json",
+#         "Content-Type": "application/json"
+#     }
+
+#     try:
+#         response = requests.get(url, headers=headers, timeout=30)
+#         response.raise_for_status()
+#         report_json = response.json()
+#         return build_erp_response(report_json, erp_customer, contact_details, start_date, end_date)
+#     except requests.RequestException as exc:
+#         frappe.log_error(
+#             message=f"{frappe.get_traceback()}\nURL: {url}\nDetails: {str(exc)}",
+#             title="QuickBooks Customer Statement Fetch Failed"
+#         )
+#         frappe.throw(_("Unable to fetch customer statement from QuickBooks. Please try again later."))
+#     except ValueError:
+#         frappe.log_error(
+#             message=f"{frappe.get_traceback()}\nURL: {url}\nDetails: Non-JSON response",
+#             title="QuickBooks Customer Statement Invalid Response"
+#         )
+#         frappe.throw(_("QuickBooks returned an invalid response for the customer statement request."))
+
 @frappe.whitelist()
 def fetch_quickbooks_customer_statement(**kwargs):
     """
-    Fetch the Customer Balance Detail report from QuickBooks and return it in ERP-style format.
+    Fetch a clean customer statement from QuickBooks Online using the TransactionList report.
+    Returns invoices, payments, credit notes, and balances for the given period.
     """
 
-    def normalize_key(raw_key, fallback):
-        key = raw_key or fallback or ""
-        return key.strip().lower().replace(" ", "_").replace("*", "")
+    # ---------------------- Helpers ----------------------
+    def qbo_get(url, token):
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json"
+        }
+        resp = requests.get(url, headers=headers, timeout=30)
+        resp.raise_for_status()
+        return resp.json()
 
-    def get_column_keys(report_json):
-        keys = []
-        columns_data = report_json.get("Columns", {})
-        
-        # Handle different column structures
-        if isinstance(columns_data, dict):
-            columns = columns_data.get("Column", [])
-        elif isinstance(columns_data, list):
-            columns = columns_data
-        else:
-            columns = []
-            
-        if not columns:
-            # Fallback: try to infer from header
-            header = report_json.get("Header", {})
-            if header:
-                # Use common column names
-                keys = ["date", "transaction_type", "doc_num", "customer", "due_date", "amount", "balance"]
-        
-        for idx, column in enumerate(columns):
-            if isinstance(column, dict):
-                meta = None
-                metadata = column.get("MetaData", [])
-                if metadata:
-                    for md in metadata:
-                        if isinstance(md, dict) and md.get("Name") == "ColKey":
-                            meta = md.get("Value")
-                            break
-                
-                col_title = column.get("ColTitle") or column.get("title") or ""
-                keys.append(normalize_key(meta, col_title or f"col_{idx}"))
-            else:
-                keys.append(f"col_{idx}")
-                
-        return keys if keys else [f"col_{i}" for i in range(10)]  # Default fallback
+    def normalize(value):
+        return (value or "").strip()
 
-    def coldata_to_dict(coldata, keys):
-        record = {}
-        if not coldata:
-            return record
-            
-        for idx, col in enumerate(coldata):
-            if not isinstance(col, dict):
-                continue
-                
-            key = keys[idx] if idx < len(keys) else f"col_{idx}"
-            
-            # Extract value - handle different formats
-            value = col.get("value")
-            if value is None:
-                value = col.get("Value")  # Try capitalized
-            if value is None:
-                value = col.get("text") or col.get("Text")
-            
-            if value not in (None, ""):
-                # Clean up value - remove currency symbols and whitespace
-                if isinstance(value, str):
-                    value = value.strip()
-                record[key] = value
-                
-            # Extract ID if present
-            col_id = col.get("id") or col.get("Id") or col.get("ID")
-            if col_id:
-                record[f"{key}_id"] = col_id
-                
-        return record
+    def flt_safe(v):
+        try:
+            return flt(v)
+        except Exception:
+            return 0.0
 
-    def flatten_rows(row_items, keys, bucket, summary_bucket):
-        if not row_items:
-            return
-            
-        # Handle both list and single row
-        if not isinstance(row_items, list):
-            row_items = [row_items]
-            
-        for row in row_items:
-            if not isinstance(row, dict):
-                continue
-                
-            row_type = row.get("type", "").lower()
-            col_data = row.get("ColData", [])
-            
-            if row_type == "data":
-                record = coldata_to_dict(col_data, keys)
-                if record:  # Only add if we have data
-                    bucket.append(record)
-            elif row_type == "summary":
-                record = coldata_to_dict(col_data, keys)
-                if record:  # Only add if we have data
-                    summary_bucket.append(record)
+    # Identify transaction type based on QBO keywords
+    def detect_type(type_str, doc_num):
+        s = (type_str or "").lower()
+        d = (doc_num or "").lower()
 
-            # Recursively process nested rows
-            nested_rows = None
-            if row.get("Rows"):
-                nested_data = row["Rows"]
-                if isinstance(nested_data, dict):
-                    nested_rows = nested_data.get("Row", [])
-                elif isinstance(nested_data, list):
-                    nested_rows = nested_data
-            elif row.get("Row"):
-                nested_rows = row.get("Row")
-                
-            if nested_rows:
-                flatten_rows(nested_rows, keys, bucket, summary_bucket)
-
-    def resolve_erp_customer(identifier):
-        if not identifier:
-            return None
-
-        filters = {"custom_quickbooks_customer_id": identifier}
-        doc = frappe.db.get_value("Customer", filters, ["name", "customer_name", "custom_quickbooks_customer_id"], as_dict=True)
-        if doc:
-            return doc
-
-        if frappe.db.exists("Customer", identifier):
-            return frappe.db.get_value("Customer", identifier, ["name", "customer_name", "custom_quickbooks_customer_id"], as_dict=True)
-
+        if "invoice" in s or "inv" in d or d.startswith("si-"):
+            return "invoice"
+        if "credit" in s or "memo" in s or "cm-" in d:
+            return "creditmemo"
+        if "payment" in s or "pmt" in s or d.startswith("pmt"):
+            return "payment"
         return None
 
-    def get_contact_details(erp_customer):
-        if not erp_customer:
-            return {"contact_name": None, "phone": None, "email": None, "address": None}
-
-        contact_name = None
-        phone = None
-        email = None
-        address_text = None
-
-        primary_contact = frappe.db.get_value(
-            "Dynamic Link",
-            {
-                "link_doctype": "Customer",
-                "link_name": erp_customer.name,
-                "parenttype": "Contact",
-            },
-            "parent",
-        )
-
-        if primary_contact:
-            contact_doc = frappe.get_doc("Contact", primary_contact)
-            contact_name = contact_doc.first_name or contact_doc.name
-            phone = contact_doc.mobile_no or contact_doc.phone
-            email = contact_doc.email_id
-
-        address_link = frappe.db.get_value(
-            "Dynamic Link",
-            {
-                "link_doctype": "Customer",
-                "link_name": erp_customer.name,
-                "parenttype": "Address",
-            },
-            "parent",
-        )
-
-        if address_link:
-            address_doc = frappe.get_doc("Address", address_link)
-            address_text = ", ".join(filter(None, [address_doc.address_line1, address_doc.city, address_doc.country]))
-
-        return {
-            "contact_name": contact_name,
-            "phone": phone,
-            "email": email,
-            "address": address_text,
-        }
-
-    def build_erp_response(report_json, customer_info, contact_info, start_date, end_date):
-        column_keys = get_column_keys(report_json)
-        transactions, summaries = [], []
-        flatten_rows(report_json.get("Rows", {}).get("Row", []), column_keys, transactions, summaries)
-
-        currency = report_json.get("Header", {}).get("Currency") or "AUD"
-
-        def pick(record, *keys):
-            for key in keys:
-                if key in record and record[key] not in (None, ""):
-                    return record[key]
-            return ""
-
-        invoices, credit_notes, payments = [], [], []
-        opening_balance = 0.0
-
-        # Process summary rows first to get opening balance
-        for summary in summaries:
-            summary_type = (pick(summary, "col_0", "col_1") or "").lower()
-            balance_value = flt(pick(summary, "balance", "open_balance", "amount", "col_2", "col_3", "col_4"))
-            
-            # Look for opening balance in summary rows
-            if "opening" in summary_type or "beginning" in summary_type:
-                opening_balance = balance_value
-            elif "total" in summary_type and balance_value and opening_balance == 0:
-                # Sometimes opening balance is in a total row
-                opening_balance = balance_value
-
-        # Process transactions
-        for txn in transactions:
-            # Try multiple field name variations for transaction type
-            txn_type_raw = pick(txn, "txn_type", "transaction_type", "type", "col_0", "col_1") or ""
-            txn_type = str(txn_type_raw).lower().strip()
-            
-            # Try multiple field name variations for document number
-            doc_num = pick(txn, "doc_num", "docnum", "txn_id", "num", "col_1", "col_2")
-            
-            # Try multiple field name variations for dates
-            tx_date = pick(txn, "tx_date", "date", "transaction_date", "col_0", "col_1")
-            due_date = pick(txn, "due_date", "due", "col_2", "col_3")
-            
-            memo = pick(txn, "memo", "cust_msg", "description", "col_4", "col_5")
-            
-            # Try multiple field name variations for amounts
-            amount = flt(pick(txn, "subt_amount", "amount", "total_amount", "col_3", "col_4", "col_5"))
-            balance = flt(pick(txn, "balance", "open_balance", "amount_due", "outstanding_amount", "col_4", "col_5", "col_6"))
-            
-            # If amount is 0 but balance has value, use balance
-            if amount == 0 and balance != 0:
-                amount = abs(balance)
-            
-            # Skip if no meaningful data
-            if not doc_num and amount == 0 and balance == 0:
-                continue
-
-            # Determine transaction type more reliably
-            if not txn_type or txn_type == "":
-                # Try to infer from other fields
-                if "invoice" in str(doc_num).lower() or "si-" in str(doc_num).lower():
-                    txn_type = "invoice"
-                elif "credit" in str(doc_num).lower() or "cn-" in str(doc_num).lower():
-                    txn_type = "creditmemo"
-                elif "payment" in str(doc_num).lower() or "pay-" in str(doc_num).lower():
-                    txn_type = "payment"
-
-            if txn_type in ("invoice", "salesreceipt", "sales_receipt", "inv"):
-                outstanding = abs(balance) if balance != 0 else abs(amount)
-                invoices.append({
-                    "invoice_id": doc_num or "",
-                    "posting_date": tx_date or "",
-                    "due_date": due_date or "",
-                    "grand_total": abs(amount) if amount != 0 else abs(outstanding),
-                    "outstanding_amount": outstanding,
-                    "status": "Paid" if outstanding == 0 else "Unpaid",
-                    "currency": currency,
-                    "payment_status": "Paid" if outstanding == 0 else "Unpaid",
-                })
-            elif txn_type in ("creditmemo", "credit_memo", "credit", "credit memo"):
-                remaining_credit = abs(balance) if balance != 0 else abs(amount)
-                credit_notes.append({
-                    "credit_note_no": doc_num or "",
-                    "posting_date": tx_date or "",
-                    "status": "Closed" if remaining_credit == 0 else "Open",
-                    "total": abs(amount) if amount != 0 else abs(remaining_credit),
-                    "remaining_credit": remaining_credit,
-                    "currency": currency,
-                })
-            elif txn_type in ("payment", "receivepayment", "sales_payment", "payment received"):
-                # Payments are typically negative in QuickBooks
-                paid_amount = abs(amount) if amount != 0 else abs(balance)
-                payments.append({
-                    "payment_id": doc_num or "",
-                    "posting_date": tx_date or "",
-                    "paid_amount": paid_amount,
-                    "received_amount": paid_amount,
-                    "payment_type": "Receive",
-                    "mode_of_payment": pick(txn, "ship_via", "payment_method"),
-                    "reference_no": memo,
-                })
-
-        # Calculate totals
-        total_invoices = sum(flt(inv["grand_total"]) for inv in invoices)
-        total_credit_notes = sum(flt(note["total"]) for note in credit_notes)
-        total_payments = sum(flt(pay["paid_amount"]) for pay in payments)
-        
-        # Calculate closing balance: opening + invoices - credit notes - payments
-        closing_balance = opening_balance + total_invoices - total_credit_notes - total_payments
-
-        return {
-            "status": "success",
-            "customer": (customer_info.name if customer_info else None),
-            "customer_name": (customer_info.customer_name if customer_info else report_json.get("Header", {}).get("Customer")),
-            "company": frappe.defaults.get_global_default("company"),
-            "from_date": start_date,
-            "to_date": end_date,
-            "contact_details": contact_info,
-            "invoices": invoices,
-            "credit_notes": credit_notes,
-            "payments": payments,
-            "summary": {
-                "currency": currency,
-                "opening_balance": opening_balance,
-                "total_invoices": total_invoices,
-                "total_payments": total_payments * -1,
-                "credit_notes": total_credit_notes * -1,
-                "closing_balance": closing_balance,
-            },
-        }
-
-    try:
-        refresh_quickbooks_access_token()
-    except Exception:
-        frappe.logger().warning("[QuickBooks] Unable to refresh access token, attempting with existing token.")
-
+    # ---------------------- Read Settings ----------------------
     settings = frappe.get_single("QuickBooks Settings")
-
     if not settings.enable:
-        frappe.throw(_("QuickBooks integration is disabled. Please enable it in QuickBooks Settings."))
+        frappe.throw("QuickBooks integration is disabled.")
 
-    access_token = settings.access_token
+    base_url = settings.base_url.rstrip("/")
+    token = settings.access_token
     realm_id = settings.quickbooks_company_id
-    base_url = (settings.base_url or "").strip().rstrip("/")
+    customer = kwargs.get("customer")
+    start_date = kwargs.get("start_date")
+    end_date = kwargs.get("end_date")
 
-    if not access_token or not realm_id or not base_url:
-        frappe.throw(_("QuickBooks settings are incomplete. Please provide access token, company ID, and base URL."))
+    if not customer:
+        frappe.throw("Customer parameter is required.")
 
-    if not base_url.startswith("http"):
-        base_url = f"https://{base_url}"
+    # Swap reversed periods
+    if start_date and end_date and end_date < start_date:
+        start_date, end_date = end_date, start_date
 
-    allowed_params = [
-        "customer",
-        "shipvia",
-        "term",
-        "end_duedate",
-        "start_duedate",
-        "custom1",
-        "sort_by",
-        "arpaid",
-        "report_date",
-        "sort_order",
-        "aging_method",
-        "department",
-        "columns",
-    ]
+    # ---------------------- Resolve ERP customer ----------------------
+    erp_customer = frappe.db.get_value(
+        "Customer",
+        {"custom_quickbooks_customer_id": customer},
+        ["name", "customer_name"],
+        as_dict=True,
+    )
 
-    request_params = {}
-    form_dict = frappe._dict(frappe.form_dict or {})
-
-    for param in allowed_params:
-        value = kwargs.get(param, form_dict.get(param))
-        if value in (None, "", []):
-            continue
-        request_params[param] = value
-
-    request_params["minorversion"] = settings.minor_version or "75"
-
-    customer_identifier = request_params.get("customer") or ""
-    start_date = request_params.get("start_duedate")
-    end_date = request_params.get("end_duedate")
-
-    if not customer_identifier:
-        frappe.throw(_("Customer parameter is required to fetch the statement."))
-
-    erp_customer = resolve_erp_customer(customer_identifier)
-    contact_details = get_contact_details(erp_customer)
-
-    query_string = urlencode(request_params, doseq=True)
-    endpoint = f"{base_url}/v3/company/{realm_id}/reports/CustomerBalanceDetail"
-    url = f"{endpoint}?{query_string}" if query_string else endpoint
-
-    headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Accept": "application/json",
-        "Content-Type": "application/json"
+    # ---------------------- Build QBO request ----------------------
+    params = {
+        "customer": customer,
+        "start_date": start_date,
+        "end_date": end_date,
+        "minorversion": settings.minor_version or "75",
     }
 
-    try:
-        response = requests.get(url, headers=headers, timeout=30)
-        response.raise_for_status()
-        report_json = response.json()
-        return build_erp_response(report_json, erp_customer, contact_details, start_date, end_date)
-    except requests.RequestException as exc:
-        frappe.log_error(
-            message=f"{frappe.get_traceback()}\nURL: {url}\nDetails: {str(exc)}",
-            title="QuickBooks Customer Statement Fetch Failed"
-        )
-        frappe.throw(_("Unable to fetch customer statement from QuickBooks. Please try again later."))
-    except ValueError:
-        frappe.log_error(
-            message=f"{frappe.get_traceback()}\nURL: {url}\nDetails: Non-JSON response",
-            title="QuickBooks Customer Statement Invalid Response"
-        )
-        frappe.throw(_("QuickBooks returned an invalid response for the customer statement request."))
+    qs = urlencode(params)
+    url = f"{base_url}/v3/company/{realm_id}/reports/TransactionList?{qs}"
 
+    # ---------------------- Fetch QBO Report ----------------------
+    try:
+        report = qbo_get(url, token)
+    except Exception as e:
+        frappe.throw(f"QuickBooks API error: {str(e)}")
+
+    rows = report.get("Rows", {}).get("Row", [])
+    currency = report.get("Header", {}).get("Currency", "AUD")
+
+    invoices = []
+    credit_notes = []
+    payments = []
+    opening_balance = 0.0
+
+    # ---------------------- Parse Rows ----------------------
+    for row in rows:
+        if row.get("type") != "Data":
+            continue
+
+        cols = row.get("ColData", [])
+        if len(cols) < 5:
+            continue
+
+        tx_date = normalize(cols[0].get("value"))
+        tx_type = normalize(cols[1].get("value"))
+        doc_num = normalize(cols[2].get("value"))
+        amount = flt_safe(cols[4].get("value"))
+
+        detected = detect_type(tx_type, doc_num)
+        if not detected:
+            continue
+
+        # -------- Categorize --------
+        if detected == "invoice":
+            invoices.append({
+                "invoice_id": doc_num,
+                "posting_date": tx_date,
+                "due_date": "",
+                "grand_total": abs(amount),
+                "outstanding_amount": abs(amount),
+                "status": "Unpaid",
+                "payment_status": "Unpaid",
+                "currency": currency,
+            })
+
+        elif detected == "creditmemo":
+            credit_notes.append({
+                "credit_note_no": doc_num,
+                "posting_date": tx_date,
+                "total": abs(amount),
+                "remaining_credit": abs(amount),
+                "status": "Open",
+                "currency": currency,
+            })
+
+        elif detected == "payment":
+            payments.append({
+                "payment_id": doc_num,
+                "posting_date": tx_date,
+                "paid_amount": abs(amount),
+                "received_amount": abs(amount),
+                "payment_type": "Receive",
+                "mode_of_payment": None,
+                "reference_no": None,
+            })
+
+    # ---------------------- Totals ----------------------
+    total_invoices = sum(flt_safe(i["grand_total"]) for i in invoices)
+    total_credits = sum(flt_safe(c["total"]) for c in credit_notes)
+    total_payments = sum(flt_safe(p["paid_amount"]) for p in payments)
+
+    closing_balance = opening_balance + total_invoices - total_credits - total_payments
+
+    # ---------------------- Response ----------------------
+    return {
+        "status": "success",
+        "customer": erp_customer.name if erp_customer else customer,
+        "customer_name": erp_customer.customer_name if erp_customer else customer,
+        "company": frappe.defaults.get_global_default("company"),
+        "from_date": start_date,
+        "to_date": end_date,
+        "contact_details": {},
+        "invoices": invoices,
+        "credit_notes": credit_notes,
+        "payments": payments,
+        "summary": {
+            "currency": currency,
+            "opening_balance": opening_balance,
+            "total_invoices": total_invoices,
+            "total_payments": -total_payments,
+            "credit_notes": -total_credits,
+            "closing_balance": closing_balance,
+        },
+    }
 
 
 @frappe.whitelist(allow_guest=True)
@@ -755,124 +1054,476 @@ def cancel_quickbooks_purchase_order(purchase_order_id):
 
     return _("Purchase Order {0} has been successfully cancelled in QuickBooks.").format(purchase_order_id)
 
+# # this is jaspreet bhai written api commetning for some time.
+# @frappe.whitelist(allow_guest=True)
+# def sync_single_sales_invoice(docname):
+#     """Sync a single Sales Invoice to QuickBooks with global invoice-level discount %"""
+#     import requests, json
+#     doc = frappe.get_doc("Sales Invoice", docname)
+
+#     if doc.docstatus == 2:
+#         frappe.msgprint("Cancelled Invoices are not allowed to sync")
+#         return {"error": "Cancelled invoice cannot be synced."}
+
+#     refresh_quickbooks_access_token()
+#     settings = frappe.get_doc("QuickBooks Settings")
+
+#     if not settings.enable:
+#         frappe.msgprint("Please Enable QuickBooks Settings")
+#         return {"error": "QuickBooks not enabled."}
+
+#     # ---- QuickBooks endpoint ----
+#     url = f"{settings.base_url.strip().rstrip('/')}/v3/company/{settings.quickbooks_company_id}/invoice?minorversion={settings.minor_version or '75'}"
+#     headers = {
+#         "Authorization": f"Bearer {settings.access_token}",
+#         "Content-Type": "application/json",
+#         "Accept": "application/json"
+#     }
+
+#     # ---- Customer ----
+#     customer = frappe.get_doc("Customer", doc.customer)
+#     qb_customer_id = customer.get("custom_quickbooks_customer_id") or "1"
+#     send_item = (settings.send_item) == 1
+
+#     # ---- Helper: get tax code ----
+#     def get_tax_code(item):
+#         if not item.item_tax_template:
+#             return "5"
+#         try:
+#             return frappe.get_doc("Item Tax Template", item.item_tax_template).custom_quickbooks_gst_id or "5"
+#         except Exception as e:
+#             frappe.log_error(f"Error fetching GST from {item.item_tax_template}", str(e))
+#             return "5"
+
+#     # ---- Prepare line items ----
+#     line_items = []
+#     subtotal = 0.0
+#     for item in doc.items:
+#         amount = float(item.amount or 0)
+#         subtotal += amount
+#         detail = {
+#             "Qty": item.qty,
+#             "UnitPrice": float(item.rate or 0),
+#             "TaxCodeRef": {"value": get_tax_code(item)}
+#         }
+#         if send_item:
+#             qb_item_id = frappe.db.get_value("Item", item.item_code, "custom_quickbooks_item_id")
+#             if qb_item_id:
+#                 detail["ItemRef"] = {"value": qb_item_id, "name": item.item_name}
+
+#         line_items.append({
+#             "DetailType": "SalesItemLineDetail",
+#             "Amount": amount,
+#             "Description": item.description or item.item_name,
+#             "SalesItemLineDetail": detail
+#         })
+
+#     # ---- Global invoice-level discount ----
+#     discount_percent = float(doc.get("additional_discount_percentage") or 0)
+#     if discount_percent > 0:
+#         discount_amount = round(subtotal * (discount_percent / 100.0), 2)
+#         discount_line = {
+#             "DetailType": "DiscountLineDetail",
+#             # "Amount": discount_amount,
+#             "Description": f"Discount {discount_percent}%",
+#             "DiscountLineDetail": {
+#                 "PercentBased": True,
+#                 "Percent": discount_percent,
+#                 # 👇 confirmed from your QBO chart: Id=67 "Discounts given"
+#                 "DiscountAccountRef": {"value": "53", "name": "Discounts given"}
+#             }
+#         }
+#         line_items.append(discount_line)
+
+#     # ---- Build payload ----
+#     payload = {
+#         "DocNumber": doc.name,
+#         "TxnDate": str(doc.posting_date),
+#         "DueDate": str(getattr(doc, "due_date", doc.posting_date)),
+#         "CustomerRef": {"value": qb_customer_id, "name": doc.customer},
+#         "Line": line_items,
+#         "ApplyTaxAfterDiscount": True,
+#         "CustomerMemo": {"value": "Generated from ERPNext"},
+#         "PrintStatus": "NeedToPrint",
+#         "EmailStatus": "NotSet",
+#         "GlobalTaxCalculation": "TaxInclusive"
+#     }
+
+#     # ---- Send request ----
+#     try:
+#         res = requests.post(url, headers=headers, data=json.dumps(payload))
+#         body = res.json() if res.text else {}
+
+#         if res.status_code in (200, 201) and body.get("Invoice", {}).get("Id"):
+#             qbo_id = body["Invoice"]["Id"]
+#             doc.db_set("custom_quickbooks_invoice_id", qbo_id)
+#             doc.db_set("status", "Confirmed")
+#             doc.db_set("is_synced", 1)
+#             frappe.db.commit()
+
+#             frappe.logger().info(f"[QBO] Sales Invoice {doc.name} synced as QBO Invoice {qbo_id}")
+#             return {"id": qbo_id, "response": body}
+#         else:
+#             frappe.log_error("QuickBooks Invoice Sync Failed",
+#                              f"Sales Invoice: {doc.name}\nStatus: {res.status_code}\nResponse: {res.text}")
+#             return {"error": f"Sync failed ({res.status_code})", "response": body}
+
+#     except Exception as e:
+#         frappe.log_error("QuickBooks Invoice Sync Error",
+#                          f"Sales Invoice: {doc.name}\nError: {str(e)}")
+#         return {"error": str(e)}
+
+# this is by rajkumar
 @frappe.whitelist(allow_guest=True)
 def sync_single_sales_invoice(docname):
     """Sync a single Sales Invoice to QuickBooks with global invoice-level discount %"""
     import requests, json
-    doc = frappe.get_doc("Sales Invoice", docname)
-
-    if doc.docstatus == 2:
-        frappe.msgprint("Cancelled Invoices are not allowed to sync")
-        return {"error": "Cancelled invoice cannot be synced."}
-
-    refresh_quickbooks_access_token()
-    settings = frappe.get_doc("QuickBooks Settings")
-
-    if not settings.enable:
-        frappe.msgprint("Please Enable QuickBooks Settings")
-        return {"error": "QuickBooks not enabled."}
-
-    # ---- QuickBooks endpoint ----
-    url = f"{settings.base_url.strip().rstrip('/')}/v3/company/{settings.quickbooks_company_id}/invoice?minorversion={settings.minor_version or '75'}"
-    headers = {
-        "Authorization": f"Bearer {settings.access_token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json"
-    }
-
-    # ---- Customer ----
-    customer = frappe.get_doc("Customer", doc.customer)
-    qb_customer_id = customer.get("custom_quickbooks_customer_id") or "1"
-    send_item = (settings.send_item) == 1
-
-    # ---- Helper: get tax code ----
-    def get_tax_code(item):
-        if not item.item_tax_template:
-            return "5"
-        try:
-            return frappe.get_doc("Item Tax Template", item.item_tax_template).custom_quickbooks_gst_id or "5"
-        except Exception as e:
-            frappe.log_error(f"Error fetching GST from {item.item_tax_template}", str(e))
-            return "5"
-
-    # ---- Prepare line items ----
-    line_items = []
-    subtotal = 0.0
-    for item in doc.items:
-        amount = float(item.amount or 0)
-        subtotal += amount
-        detail = {
-            "Qty": item.qty,
-            "UnitPrice": float(item.rate or 0),
-            "TaxCodeRef": {"value": get_tax_code(item)}
-        }
-        if send_item:
-            qb_item_id = frappe.db.get_value("Item", item.item_code, "custom_quickbooks_item_id")
-            if qb_item_id:
-                detail["ItemRef"] = {"value": qb_item_id, "name": item.item_name}
-
-        line_items.append({
-            "DetailType": "SalesItemLineDetail",
-            "Amount": amount,
-            "Description": item.description or item.item_name,
-            "SalesItemLineDetail": detail
-        })
-
-    # ---- Global invoice-level discount ----
-    discount_percent = float(doc.get("additional_discount_percentage") or 0)
-    if discount_percent > 0:
-        discount_amount = round(subtotal * (discount_percent / 100.0), 2)
-        discount_line = {
-            "DetailType": "DiscountLineDetail",
-            "Amount": discount_amount,
-            "Description": f"Discount {discount_percent}%",
-            "DiscountLineDetail": {
-                "PercentBased": True,
-                "Percent": discount_percent,
-                # 👇 confirmed from your QBO chart: Id=67 "Discounts given"
-                "DiscountAccountRef": {"value": "53", "name": "Discounts given"}
-            }
-        }
-        line_items.append(discount_line)
-
-    # ---- Build payload ----
-    payload = {
-        "DocNumber": doc.name,
-        "TxnDate": str(doc.posting_date),
-        "DueDate": str(getattr(doc, "due_date", doc.posting_date)),
-        "CustomerRef": {"value": qb_customer_id, "name": doc.customer},
-        "Line": line_items,
-        "ApplyTaxAfterDiscount": True,
-        "CustomerMemo": {"value": "Generated from ERPNext"},
-        "PrintStatus": "NeedToPrint",
-        "EmailStatus": "NotSet",
-        "GlobalTaxCalculation": "TaxInclusive"
-    }
-
-    # ---- Send request ----
+    
     try:
+        # Log start of sync process
+        frappe.log_error(
+            title="QBO Sync Started",
+            message=f"Starting sync for Sales Invoice: {docname}"
+        )
+        
+        doc = frappe.get_doc("Sales Invoice", docname)
+        if doc.docstatus == 2:
+            frappe.msgprint("Cancelled Invoices are not allowed to sync")
+            frappe.log_error(
+                title="QBO Sync Blocked - Cancelled Invoice",
+                message=f"Sales Invoice {docname} is cancelled (docstatus=2)"
+            )
+            return {"error": "Cancelled invoice cannot be synced."}
+
+        refresh_quickbooks_access_token()
+        settings = frappe.get_doc("QuickBooks Settings")
+        if not settings.enable:
+            frappe.msgprint("Please Enable QuickBooks Settings")
+            frappe.log_error(
+                title="QBO Sync Blocked - Settings Disabled",
+                message=f"QuickBooks Settings is disabled for Sales Invoice: {docname}"
+            )
+            return {"error": "QuickBooks not enabled."}
+
+        # ---- QuickBooks endpoint ----
+        url = f"{settings.base_url.strip().rstrip('/')}/v3/company/{settings.quickbooks_company_id}/invoice?minorversion={settings.minor_version or '75'}"
+        headers = {
+            "Authorization": f"Bearer {settings.access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        
+        frappe.log_error(
+            title="QBO Sync - API Configuration",
+            message=f"Sales Invoice: {docname}\nURL: {url}\nMinor Version: {settings.minor_version or '75'}"
+        )
+
+        # ---- Customer ----
+        customer = frappe.get_doc("Customer", doc.customer)
+        qb_customer_id = customer.get("custom_quickbooks_customer_id") or "1"
+        send_item = (settings.send_item) == 1
+        
+        frappe.log_error(
+            title="QBO Sync - Customer Info",
+            message=f"Sales Invoice: {docname}\nCustomer: {doc.customer}\nQB Customer ID: {qb_customer_id}\nSend Item: {send_item}"
+        )
+
+        # ---- Helper: get tax code ----
+        def get_tax_code(item):
+            tax_template = item.item_tax_template
+            if not tax_template:
+                # Try to fetch from Item master
+                tax_template = frappe.db.get_value("Item", item.item_code, "item_tax_template")
+            
+            if not tax_template:
+                return "5"
+            try:
+                tax_code = frappe.get_doc("Item Tax Template", tax_template).custom_quickbooks_gst_id or "5"
+                frappe.log_error(
+                    title="QBO Sync - Tax Code Retrieved",
+                    message=f"Item: {item.item_code}\nTax Template: {tax_template}\nTax Code: {tax_code}"
+                )
+                return tax_code
+            except Exception as e:
+                frappe.log_error(
+                    title="QBO Sync - Tax Code Error",
+                    message=f"Error fetching GST from {tax_template}\nItem: {item.item_code}\nError: {str(e)}"
+                )
+                return "5"
+
+        # ---- Prepare line items ----
+        line_items = []
+        subtotal = 0.0
+        tax_code_weights = {}  # Track amount per tax code to find dominant one
+        
+        frappe.log_error(
+            title="QBO Sync - Invoice Amounts",
+            message=f"Sales Invoice: {docname}\n" +
+                    f"Total (doc.total): {doc.total}\n" +
+                    f"Net Total (doc.net_total): {doc.net_total}\n" +
+                    f"Grand Total (doc.grand_total): {doc.grand_total}\n" +
+                    f"Discount Amount (doc.discount_amount): {getattr(doc, 'discount_amount', 0)}\n" +
+                    f"Additional Discount %: {getattr(doc, 'additional_discount_percentage', 0)}"
+        )
+        
+        for idx, item in enumerate(doc.items, 1):
+            amount = float(item.amount or 0)
+            subtotal += amount
+            
+            # Retrieve tax code once
+            item_tax_code = get_tax_code(item)
+            
+            # Track weight (accumulate amount per tax code)
+            tax_code_weights[item_tax_code] = tax_code_weights.get(item_tax_code, 0.0) + amount
+
+            detail = {
+                "Qty": item.qty,
+                "UnitPrice": float(item.rate or 0),
+                "TaxCodeRef": {"value": item_tax_code}
+            }
+            
+            if send_item:
+                qb_item_id = frappe.db.get_value("Item", item.item_code, "custom_quickbooks_item_id")
+                if qb_item_id:
+                    detail["ItemRef"] = {"value": qb_item_id, "name": item.item_name}
+                    frappe.log_error(
+                        title=f"QBO Sync - Line Item {idx} with QBO Item",
+                        message=f"Sales Invoice: {docname}\nItem: {item.item_code}\nQB Item ID: {qb_item_id}\nQty: {item.qty}\nRate: {item.rate}\nAmount: {amount}"
+                    )
+                else:
+                    frappe.log_error(
+                        title=f"QBO Sync - Line Item {idx} without QBO Item",
+                        message=f"Sales Invoice: {docname}\nItem: {item.item_code}\nNo QB Item ID found\nQty: {item.qty}\nRate: {item.rate}\nAmount: {amount}"
+                    )
+
+            line_items.append({
+                "DetailType": "SalesItemLineDetail",
+                "Amount": amount,
+                "Description": item.description or item.item_name,
+                "SalesItemLineDetail": detail
+            })
+        
+        frappe.log_error(
+            title="QBO Sync - Line Items Summary",
+            message=f"Sales Invoice: {docname}\nTotal Line Items: {len(line_items)}\nSubtotal: {subtotal}"
+        )
+
+        # ---- Global invoice-level discount ----
+        # In ERPNext, discount_amount is the value of the discount.
+        # additional_discount_percentage is the % value.
+        discount_amount = flt(doc.get("discount_amount"))
+        additional_discount_percentage = flt(doc.get("additional_discount_percentage"))
+        
+        frappe.log_error(
+            title="QBO DEBUG - Raw Discount Values",
+            message=f"Doc: {docname}\ndiscount_amount: {discount_amount}\nadditional_discount_percentage: {additional_discount_percentage}\nsubtotal: {subtotal}"
+        )
+
+        # Force calculation if percentage exists, to ensure we have a value
+        if additional_discount_percentage > 0:
+            calculated_discount = round(subtotal * (additional_discount_percentage / 100.0), 2)
+            # Use calculated if doc.discount_amount is 0 or vastly different? 
+            # Let's prefer the calculated one if discount_amount is 0
+            if discount_amount == 0:
+                discount_amount = calculated_discount
+                frappe.log_error(title="QBO DEBUG - Using Calculated Discount", message=f"Calculated: {discount_amount}")
+
+        frappe.log_error(
+            title="QBO DEBUG - Final Discount to Send",
+            message=f"Discount Amount: {discount_amount}"
+        )
+        
+        if discount_amount > 0:
+            # STRATEGY: Send fixed amount (no percentage)
+            
+            # Determine dominant tax code (Tax code with highest total amount)
+            # Default to "5" (GST) if no items or something fails
+            discount_tax_code = "5"
+            if tax_code_weights:
+                try:
+                    # Find key with max value
+                    discount_tax_code = max(tax_code_weights, key=tax_code_weights.get)
+                    frappe.log_error(title="QBO DEBUG - Dominant Tax Code Found", message=f"Selected Tax Code: {discount_tax_code} based on weights: {json.dumps(tax_code_weights)}")
+                except Exception as e:
+                    frappe.log_error(title="QBO DEBUG - Tax Code Selection Error", message=str(e))
+                    # Fallback to first item logic if weight calculation fails (shouldn't happen)
+                    if len(line_items) > 0 and "SalesItemLineDetail" in line_items[0]:
+                        try:
+                            discount_tax_code = line_items[0]["SalesItemLineDetail"]["TaxCodeRef"]["value"]
+                        except:
+                            pass
+
+            frappe.log_error(
+                title="QBO DEBUG - Discount Tax Code",
+                message=f"Using Tax Code: {discount_tax_code}"
+            )
+
+            # Strictly match the manual working payload
+            # Removed DiscountAccountRef as it was not in the working manual payload
+            discount_line = {
+               "DetailType": "DiscountLineDetail",
+               "Amount": discount_amount,
+               "DiscountLineDetail": {
+                   "PercentBased": False,
+                   "TaxCodeRef": {"value": discount_tax_code}
+               }
+            }
+            
+            line_items.append(discount_line)
+            
+            frappe.log_error(
+                title="QBO DEBUG - Discount Payload",
+                message=f"Payload Line:\n{json.dumps(discount_line, indent=2)}"
+            )
+        else:
+            frappe.log_error(
+                title="QBO Sync - No Discount",
+                message=f"Sales Invoice: {docname}\nNo additional discount percentage found"
+            )
+
+        # ---- Build payload ----
+        apply_discount_on = doc.get("apply_discount_on") or "Grand Total" # Default to Grand Total if not set
+        
+        # Determine QBO behavior based on ERPNext discount setting
+        if apply_discount_on == "Net Total":
+            # Discount applied BEFORE tax
+            apply_tax_after_discount = True 
+            # Discount line needs a TAXABLE code so it reduces the tax basis
+            # We already calculated 'discount_tax_code' (dominant tax code) above for this purpose
+        else:
+            # "Grand Total" -> Discount applied AFTER tax
+            apply_tax_after_discount = False
+            # Discount line needs a NON-TAXABLE code so it doesn't reduce the calculated tax
+            # We force it to "Non-Taxable" (usually ID "4" or "NON" in standard QBO AU/Global)
+            # You might need to adjust "4" if your specific QBO Non-Taxable code is different.
+            # Assuming '4' based on your earlier payload which had "TaxCodeRef": {"value": "4"} for a line item.
+            discount_tax_code = "4" # Or "NON" or whatever is "Tax Free" in your system
+            
+            frappe.log_error(
+                title="QBO Sync - Discount Logic",
+                message=f"Apply Discount On: {apply_discount_on} -> Setting ApplyTaxAfterDiscount=False, TaxCode=Non-Taxable({discount_tax_code})"
+            )
+
+            # Update the discount line we appended earlier if we need to change the tax code
+            if len(line_items) > 0 and line_items[-1].get("DetailType") == "DiscountLineDetail":
+                 line_items[-1]["DiscountLineDetail"]["TaxCodeRef"]["value"] = discount_tax_code
+
+
+        payload = {
+            "DocNumber": doc.name,
+            "TxnDate": str(doc.posting_date),
+            "DueDate": str(doc.due_date or doc.posting_date), # Use due_date, fallback to posting_date
+            "CustomerRef": {"value": qb_customer_id, "name": doc.customer},
+            "Line": line_items,
+            "ApplyTaxAfterDiscount": apply_tax_after_discount, 
+            "CustomerMemo": {"value": "Generated from ERPNext"},
+            "PrintStatus": "NeedToPrint",
+            "EmailStatus": "NotSet"
+        }
+        
+        # Remove GlobalTaxCalculation to let QBO use defaults/customer settings
+        # This matches the working manual payload
+        
+        frappe.log_error(
+            title="QBO Sync - Final Payload",
+            message=f"Sales Invoice: {docname}\nPayload:\n{json.dumps(payload, indent=2)}"
+        )
+
+        # ---- Send request ----
+        frappe.log_error(
+            title="QBO Sync - Sending Request",
+            message=f"Sales Invoice: {docname}\nSending POST request to QuickBooks..."
+        )
+        
         res = requests.post(url, headers=headers, data=json.dumps(payload))
+        
+        # ---- Log full request + response for debugging ----
+        frappe.log_error(
+            title="QBO Invoice Request + Response",
+            message=(
+                f"Sales Invoice: {docname}\n\n"
+                f"REQUEST PAYLOAD:\n{json.dumps(payload, indent=2, default=str)}\n\n"
+                f"STATUS CODE: {res.status_code}\n\n"
+                f"RESPONSE BODY:\n{res.text}"
+            )
+        )
+        
+        frappe.log_error(
+            title="QBO Sync - Response Received",
+            message=f"Sales Invoice: {docname}\nStatus Code: {res.status_code}\nResponse Headers: {dict(res.headers)}\nResponse Text (first 2000 chars): {res.text[:2000]}"
+        )
+        
         body = res.json() if res.text else {}
 
-        if res.status_code in (200, 201) and body.get("Invoice", {}).get("Id"):
-            qbo_id = body["Invoice"]["Id"]
-            doc.db_set("custom_quickbooks_invoice_id", qbo_id)
-            doc.db_set("status", "Confirmed")
-            doc.db_set("is_synced", 1)
-            frappe.db.commit()
+        if res.status_code in (200, 201):
+            if body.get("Invoice"):
+                qbo_id = body["Invoice"]["Id"]
+                
+                # Log the discount details from QB response
+                qb_lines = body["Invoice"].get("Line", [])
+                discount_lines = [l for l in qb_lines if l.get("DetailType") == "DiscountLineDetail"]
+                
+                frappe.log_error(
+                    title="QBO Sync - QB Response Analysis",
+                    message=f"Sales Invoice: {docname}\n" +
+                            f"QB Invoice ID: {qbo_id}\n" +
+                            f"QB Total: {body['Invoice'].get('TotalAmt')}\n" +
+                            f"QB Balance: {body['Invoice'].get('Balance')}\n" +
+                            f"Discount Lines Found: {len(discount_lines)}\n" +
+                            f"Discount Line Details: {json.dumps(discount_lines, indent=2)}"
+                )
+                
+                doc.db_set("custom_quickbooks_invoice_id", qbo_id)
+                doc.db_set("status", "Confirmed")
+                doc.db_set("is_synced", 1)
+                frappe.db.commit()
 
-            frappe.logger().info(f"[QBO] Sales Invoice {doc.name} synced as QBO Invoice {qbo_id}")
-            return {"id": qbo_id, "response": body}
+                frappe.log_error(
+                    title="QBO Sync - SUCCESS",
+                    message=f"Sales Invoice: {docname}\nQBO Invoice ID: {qbo_id}\nFull Response: {json.dumps(body, indent=2)}"
+                )
+                
+                frappe.msgprint(f"Successfully synced to QuickBooks! QBO Invoice ID: {qbo_id}")
+                return {"id": qbo_id, "response": body}
+            else:
+                frappe.log_error(
+                    title="QBO Sync - Unexpected Response Format",
+                    message=f"Sales Invoice: {docname}\nStatus: {res.status_code}\nResponse missing 'Invoice' key\nFull Response: {json.dumps(body, indent=2)}"
+                )
+                return {"error": "Unexpected response format", "response": body}
         else:
-            frappe.log_error("QuickBooks Invoice Sync Failed",
-                             f"Sales Invoice: {doc.name}\nStatus: {res.status_code}\nResponse: {res.text}")
-            return {"error": f"Sync failed ({res.status_code})", "response": body}
+            # Extract detailed error information
+            fault = body.get("Fault", {})
+            errors = fault.get("Error", [])
+            error_messages = []
+            
+            for error in errors:
+                error_messages.append(f"Code: {error.get('code')}, Message: {error.get('Message')}, Detail: {error.get('Detail')}")
+            
+            frappe.log_error(
+                title="QBO Sync - FAILED",
+                message=f"Sales Invoice: {docname}\n" +
+                        f"Status Code: {res.status_code}\n" +
+                        f"Errors: {'; '.join(error_messages)}\n" +
+                        f"Full Response: {json.dumps(body, indent=2)}\n" +
+                        f"Request Payload: {json.dumps(payload, indent=2)}"
+            )
+            
+            error_msg = error_messages[0] if error_messages else "Unknown error"
+            frappe.msgprint(f"QuickBooks sync failed: {error_msg}")
+            return {"error": f"Sync failed ({res.status_code})", "details": error_messages, "response": body}
 
     except Exception as e:
-        frappe.log_error("QuickBooks Invoice Sync Error",
-                         f"Sales Invoice: {doc.name}\nError: {str(e)}")
-        return {"error": str(e)}
-
+        import traceback
+        frappe.log_error(
+            title="QBO Sync - EXCEPTION",
+            message=f"Sales Invoice: {docname}\n" +
+                    f"Exception Type: {type(e).__name__}\n" +
+                    f"Error: {str(e)}\n" +
+                    f"Full Traceback:\n{traceback.format_exc()}"
+        )
+        frappe.msgprint(f"Error during sync: {str(e)}")
+        return {"error": str(e), "traceback": traceback.format_exc()}
 
 
 def create_item_on_quickbooks(item_name):
@@ -881,6 +1532,11 @@ def create_item_on_quickbooks(item_name):
     item_doc = frappe.get_doc("Item", item_name)
 
     if item_doc.custom_quickbooks_item_id:
+        # Item already exists in QuickBooks, but still set custom_publish_on_app = 1 when synced
+        if item_doc.custom_publish_on_app != 1:
+            item_doc.custom_publish_on_app = 1
+            item_doc.save(ignore_permissions=True)
+            frappe.db.commit()
         frappe.msgprint(_("Item {0} already exists in QuickBooks with ID {1}.").format(item_name, item_doc.custom_quickbooks_item_id))
         return
 
@@ -917,6 +1573,7 @@ def create_item_on_quickbooks(item_name):
 
         if quickbooks_id:
             item_doc.custom_quickbooks_item_id = quickbooks_id
+            item_doc.custom_publish_on_app = 1
             item_doc.save(ignore_permissions=True)
             frappe.db.commit()
             frappe.msgprint(_("Item {0} created successfully in QuickBooks with ID {1}.").format(item_name, quickbooks_id))
@@ -1171,6 +1828,7 @@ def refresh_sales_invoice_list(docname: str):
         })
 
     doc.count = len(invoices)
+    doc.sales_invoices_count = len(invoices)
     doc.save(ignore_permissions=True)
 
     return {"message": f"Refreshed {len(invoices)} invoices (excluding cancelled)."}
@@ -1320,6 +1978,7 @@ def refresh_purchase_invoices(docname: str):
         })
 
     doc.purchase_count = len(invoices)
+    doc.purchase_invoices_count = len(invoices)
     doc.save(ignore_permissions=True)
 
     return {"message": f"Refreshed {len(invoices)} invoices (excluding cancelled)."}
@@ -1574,109 +2233,6 @@ def create_quickbooks_bill(invoice):
         frappe.throw(f"QuickBooks sync failed. Response: {response.text}")
 
 
-
-# @frappe.whitelist()
-# def sync_single_purchase_invoice_to_quickbooks(purchase_invoice_name):
-#     refresh_quickbooks_access_token()
-#     """Sync a specific Purchase Invoice to QuickBooks as a Bill on Submit."""
-
-#     invoice = frappe.get_doc("Purchase Invoice", purchase_invoice_name)
-
-#     if invoice.get("custom_quickbooks_bill_id"):
-#         frappe.msgprint(f"Purchase Invoice {purchase_invoice_name} is already synced with QuickBooks.")
-#         return
-
-#     settings = frappe.get_single("QuickBooks Settings")
-#     access_token = settings.access_token
-#     realm_id = settings.quickbooks_company_id
-#     minor_version = settings.minor_version or "75"
-#     base_url = f"https://{settings.base_url.replace('https://', '').strip('/')}/v3/company/{realm_id}"
-
-#     # Vendor mapping
-#     vendor_qb_id = frappe.db.get_value("Supplier", invoice.supplier, "custom_quickbooks_supplier_id")
-#     if not vendor_qb_id:
-#         frappe.throw(f"QuickBooks Vendor ID not found for Supplier: {invoice.supplier}.")
-
-#     line_items = []
-
-#     for item in invoice.items:
-#         description = item.item_name or item.item_code
-
-#         line_items.append({
-#             "DetailType": "ItemBasedExpenseLineDetail",
-#             "Amount": float(item.amount),
-#             "Description": description,
-#             "ItemBasedExpenseLineDetail": {
-#                 "ItemRef": {"value": "3446"},
-#                 "Qty": float(item.qty),
-#                 "UnitPrice": float(item.rate),
-#                 "TaxCodeRef": {"value": "11"}
-#             }
-#         })
-
-#     # --- 🔍 Find connected Purchase Order and its custom_old_id ---
-#     connected_po_id = None
-#     custom_old_id = None
-
-#     # The Purchase Invoice might have links to PO in items
-#     for item in invoice.items:
-#         if item.purchase_order:
-#             connected_po_id = item.purchase_order
-#             break
-
-#     if connected_po_id:
-#         custom_old_id = frappe.db.get_value("Purchase Order", connected_po_id, "custom_old_id")
-
-#     # --- 🧠 Choose DocNumber intelligently ---
-#     doc_number = custom_old_id if custom_old_id else invoice.name
-
-#     payload = {
-#         "DocNumber": doc_number,
-#         "VendorRef": {"value": vendor_qb_id},
-#         "TxnDate": str(invoice.posting_date),
-#         "Line": line_items
-#     }
-
-#     headers = {
-#         "Authorization": f"Bearer {access_token}",
-#         "Content-Type": "application/json",
-#         "Accept": "application/json"
-#     }
-
-#     bill_url = f"{base_url}/bill?minorversion={minor_version}"
-
-#     try:
-#         frappe.log_error(
-#             title="QuickBooks Bill Sync - Request",
-#             message=f"Invoice: {invoice.name}\nPayload: {frappe.as_json(payload)}"
-#         )
-
-#         response = requests.post(bill_url, headers=headers, json=payload)
-
-#         try:
-#             response_json = response.json()
-#         except Exception:
-#             response_json = {"raw_text": response.text}
-
-#         frappe.log_error(
-#             title="QuickBooks Bill Sync - Response",
-#             message=f"Invoice: {invoice.name}\nStatus: {response.status_code}\nResponse: {frappe.as_json(response_json)}"
-#         )
-
-#     except Exception as e:
-#         frappe.log_error(
-#             title="QuickBooks Bill Sync - Exception",
-#             message=f"Invoice: {invoice.name}\nError: {frappe.get_traceback()}"
-#         )
-#         frappe.throw(f"QuickBooks sync failed due to a request error: {str(e)}")
-
-#     if response.status_code == 200 and "Bill" in response_json:
-#         qb_bill_id = response_json["Bill"]["Id"]
-#         frappe.db.set_value("Purchase Invoice", invoice.name, "custom_quickbooks_bill_id", qb_bill_id)
-#         frappe.db.commit()
-#         frappe.msgprint(f"Purchase Invoice {invoice.name} synced as Bill in QuickBooks. ID: {qb_bill_id}")
-#     else:
-#         frappe.throw(f"QuickBooks sync failed. Response: {response.text}")
 def sync_debit_note_to_quickbooks(invoice):
     """Sync a return Purchase Invoice to QuickBooks as a Vendor Credit."""
 
@@ -1758,7 +2314,7 @@ def start_item_images_sync_background():
         )
         return
 
-    frappe.enqueue(sync_quickbooks_item_images, queue='long', timeout=1800)  # 30 minutes timeout
+    frappe.enqueue(sync_quickbooks_item_images, queue='long', timeout=7200)  # 2 hours timeout for large batches
     frappe.msgprint("Item images sync from QuickBooks has been started in the background.")
 
 
@@ -1766,17 +2322,28 @@ def start_item_images_sync_background():
 def sync_quickbooks_item_images():
     """
     Fetch item attachments (images) from QuickBooks Online and store them in ERPNext File doctype.
-    The attachment must already exist in QBO as an Attachable linked to an Item.
-    Supports pagination to fetch all images.
-
+    
+    Correct QuickBooks API flow:
+    1. Query Attachables linked to Items
+    2. For each Attachable, call /download/{attachableId} to get TempDownloadUri
+    3. Download the actual image from TempDownloadUri
+    4. Save to Frappe File system and link to Item
+    
     Mapping:
        QBO Item.Id  -->  ERP Item.custom_quickbooks_item_id
-       QBO Attachable.Download URL --> ERPNext File saved + Linked to Item
+       QBO Attachable --> Download URL --> Image file --> ERPNext File
     """
     frappe.logger().info("[QB SYNC] Started item images sync job")
 
     # --- Refresh Token First ---
-    refresh_quickbooks_access_token()
+    try:
+        refresh_quickbooks_access_token()
+    except Exception as e:
+        frappe.log_error(
+            f"Failed to refresh QuickBooks access token: {str(e)}\n{frappe.get_traceback()}",
+            "QuickBooks Item Images Sync - Token Refresh Failed"
+        )
+        return
 
     settings = frappe.get_single("QuickBooks Settings")
     access_token = settings.access_token
@@ -1785,46 +2352,166 @@ def sync_quickbooks_item_images():
     minor_version = settings.minor_version or "75"
 
     if not access_token or not realm_id:
-        frappe.log_error("Missing QuickBooks access token or company ID", "QuickBooks Item Images Sync Failed")
+        error_msg = f"Missing QuickBooks credentials. Access Token: {'Present' if access_token else 'Missing'}, Realm ID: {'Present' if realm_id else 'Missing'}"
+        frappe.log_error(error_msg, "QuickBooks Item Images Sync Failed")
         return
 
     imported = []
     skipped = []
     start_position = 1
     max_results = 50  # Smaller batches to avoid timeouts
+    processed_count = 0  # Track processed items for periodic token refresh
+    last_token_refresh = time.time()  # Track last token refresh time
+    token_refresh_interval = 300  # Refresh token every 5 minutes (300 seconds)
+
+    # Standard headers for QuickBooks API
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json"
+    }
+    
+    def refresh_token_if_needed():
+        """Refresh token if it's been more than the refresh interval."""
+        nonlocal access_token, headers, last_token_refresh, settings
+        current_time = time.time()
+        if current_time - last_token_refresh > token_refresh_interval:
+            try:
+                frappe.logger().info("[QB SYNC] Refreshing access token (periodic refresh)")
+                refresh_quickbooks_access_token()
+                settings = frappe.get_single("QuickBooks Settings")  # Reload settings
+                access_token = settings.access_token
+                headers["Authorization"] = f"Bearer {access_token}"
+                last_token_refresh = current_time
+                frappe.logger().info("[QB SYNC] Token refreshed successfully")
+            except Exception as e:
+                frappe.log_error(
+                    f"Periodic token refresh failed: {str(e)}",
+                    "QuickBooks Item Images Sync - Periodic Token Refresh Failed"
+                )
 
     # -----------------------------------------------------------------------------------
     # FETCH ALL ATTACHABLES WITH PAGINATION
     # -----------------------------------------------------------------------------------
     while True:
         # Query attachables linked to Items with pagination
+        # Filter by EntityRef.type = 'Item' to get only item attachments
+        # Note: QuickBooks query syntax - use lowercase 'item' for type filter
         query = f"SELECT * FROM Attachable WHERE AttachableRef.EntityRef.type = 'Item' STARTPOSITION {start_position} MAXRESULTS {max_results}"
-        url = f"{base_url}/v3/company/{realm_id}/query?query={query.replace(' ', '%20')}&minorversion={minor_version}"
+        query_encoded = urlencode({"query": query, "minorversion": minor_version})
+        url = f"{base_url}/v3/company/{realm_id}/query?{query_encoded}"
 
-        headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Accept": "application/json"
-        }
-
+        # Refresh token periodically to prevent expiration
+        refresh_token_if_needed()
+        
         try:
             res = requests.get(url, headers=headers, timeout=60)
-            res.raise_for_status()
-            data = res.json()
+            
+            # Check for 401 - token expired, refresh and retry
+            if res.status_code == 401:
+                frappe.logger().info(f"[QB SYNC] Got 401 at position {start_position}, refreshing token and retrying...")
+                try:
+                    refresh_quickbooks_access_token()
+                    settings = frappe.get_single("QuickBooks Settings")  # Reload settings
+                    access_token = settings.access_token
+                    headers["Authorization"] = f"Bearer {access_token}"
+                    last_token_refresh = time.time()
+                    
+                    # Retry the request with new token
+                    res = requests.get(url, headers=headers, timeout=60)
+                    res.raise_for_status()
+                    data = res.json()
+                    frappe.logger().info(f"[QB SYNC] Retry successful after token refresh at position {start_position}")
+                except Exception as retry_error:
+                    error_msg = (
+                        f"401 Unauthorized - Token expired and refresh/retry failed.\n"
+                        f"Position: {start_position}\n"
+                        f"Error: {str(retry_error)}\n"
+                        f"URL: {url}\n"
+                        f"{frappe.get_traceback()}"
+                    )
+                    frappe.log_error(error_msg, "QuickBooks Item Images Sync - Token Refresh Failed")
+                    break
+            else:
+                res.raise_for_status()
+                data = res.json()
         except requests.exceptions.Timeout:
-            frappe.log_error(f"QBO Item Image Fetch Timeout at position {start_position}", "QuickBooks Item Images Sync Timeout")
-            # Retry once
+            error_msg = (
+                f"QuickBooks API timeout while fetching attachables.\n"
+                f"Position: {start_position}\n"
+                f"URL: {url}\n"
+                f"Retrying with longer timeout..."
+            )
+            frappe.log_error(error_msg, "QuickBooks Item Images Sync Timeout")
+            # Retry once - refresh token first in case it expired
             try:
+                refresh_token_if_needed()
                 res = requests.get(url, headers=headers, timeout=120)
+                
+                # Check for 401 on retry
+                if res.status_code == 401:
+                    refresh_quickbooks_access_token()
+                    settings.reload()
+                    access_token = settings.access_token
+                    headers["Authorization"] = f"Bearer {access_token}"
+                    res = requests.get(url, headers=headers, timeout=120)
+                
                 res.raise_for_status()
                 data = res.json()
             except Exception as e:
-                frappe.log_error(f"QBO Item Image Fetch Retry Failed: {str(e)}", "QuickBooks Item Images Sync Failed")
+                error_msg = (
+                    f"QuickBooks API retry failed after timeout.\n"
+                    f"Position: {start_position}\n"
+                    f"Error: {str(e)}\n"
+                    f"URL: {url}\n"
+                    f"{frappe.get_traceback()}"
+                )
+                frappe.log_error(error_msg, "QuickBooks Item Images Sync Failed")
                 break
         except Exception as e:
-            frappe.log_error(f"QBO Item Image Fetch Failed: {str(e)}", "QuickBooks Item Images Sync Failed")
+            error_msg = (
+                f"QuickBooks API request failed while fetching attachables.\n"
+                f"Position: {start_position}\n"
+                f"Error: {str(e)}\n"
+                f"URL: {url}\n"
+            )
+            if 'res' in locals():
+                error_msg += (
+                    f"Response Status: {res.status_code}\n"
+                    f"Response Headers: {dict(res.headers)}\n"
+                    f"Response Body: {res.text[:1000]}"
+                )
+            error_msg += f"\n{frappe.get_traceback()}"
+            frappe.log_error(error_msg, "QuickBooks Item Images Sync Failed")
             break
 
-        attachables = data.get("QueryResponse", {}).get("Attachable", [])
+        # Check for QuickBooks API errors in response
+        if "Fault" in data:
+            error_info = data.get("Fault", {})
+            errors = error_info.get("Error", [{}])
+            error_details = []
+            for err in errors:
+                error_details.append(
+                    f"Code: {err.get('code', 'N/A')}, "
+                    f"Message: {err.get('Message', 'Unknown error')}, "
+                    f"Detail: {err.get('Detail', 'N/A')}"
+                )
+            error_msg = (
+                f"QuickBooks API returned a fault response.\n"
+                f"Position: {start_position}\n"
+                f"Errors: {'; '.join(error_details)}\n"
+                f"Full Response: {json.dumps(data, indent=2)[:2000]}"
+            )
+            frappe.log_error(error_msg, "QuickBooks Item Images Sync API Error")
+            break
+        
+        # Handle both single object and array responses
+        query_response = data.get("QueryResponse", {})
+        attachables = query_response.get("Attachable", [])
+        
+        # If single object, convert to list
+        if isinstance(attachables, dict):
+            attachables = [attachables]
+        
         if not attachables:
             break  # No more attachables
 
@@ -1836,24 +2523,42 @@ def sync_quickbooks_item_images():
         for attach in attachables:
             try:
                 file_name = attach.get("FileName")
-                content_type = attach.get("ContentType")
+                content_type = attach.get("ContentType") or ""
                 attach_id = attach.get("Id")
 
                 if not file_name or not attach_id:
                     skipped.append({"id": attach_id or "unknown", "reason": "missing filename or id"})
                     continue
 
-                # Validate metadata
+                # Filter for images only - check content type and file extension
+                is_image = False
+                if content_type:
+                    is_image = content_type.lower().startswith("image/")
+                
+                # Also check file extension as fallback
+                if not is_image and file_name:
+                    image_extensions = [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".tif", ".tiff", ".webp"]
+                    file_lower = file_name.lower()
+                    is_image = any(file_lower.endswith(ext) for ext in image_extensions)
+                
+                if not is_image:
+                    skipped.append({"id": attach_id, "reason": f"not an image (content_type: {content_type}, filename: {file_name})"})
+                    continue
+
+                # Validate metadata - get Item reference
                 refs = attach.get("AttachableRef", [])
                 if not refs:
                     skipped.append({"id": attach_id, "reason": "no refs"})
                     continue
 
+                # Handle both list and single ref
                 ref = refs[0] if isinstance(refs, list) else refs
                 entity_ref = ref.get("EntityRef", {}) if isinstance(ref, dict) else {}
                 
-                if entity_ref.get("type") != "Item":
-                    skipped.append({"id": attach_id, "reason": "not item"})
+                # Check entity type (case-insensitive - QuickBooks may return "Item" or "item")
+                entity_type = entity_ref.get("type", "").lower()
+                if entity_type != "item":
+                    skipped.append({"id": attach_id, "reason": f"not item (type: {entity_ref.get('type')})"})
                     continue
 
                 qbo_item_id = entity_ref.get("value")
@@ -1872,7 +2577,7 @@ def sync_quickbooks_item_images():
                     skipped.append({"id": attach_id, "reason": f"ERPNext item not found for QBO ID {qbo_item_id}"})
                     continue
 
-                # Check if file already exists for this item
+                # Check if file already exists for this item (by name and item)
                 existing_file = frappe.db.exists(
                     "File",
                     {
@@ -1886,69 +2591,445 @@ def sync_quickbooks_item_images():
                     continue
 
                 # -----------------------------------------------------------------------------------
-                # DOWNLOAD THE FILE FROM QUICKBOOKS
+                # STEP 1: Get temporary download URL from QuickBooks
                 # -----------------------------------------------------------------------------------
-                download_url = f"{base_url}/v3/company/{realm_id}/download/{attach_id}"
+                # First, try to use TempDownloadUri from the Attachable object itself
+                temp_download_uri = attach.get("TempDownloadUri")
+                
+                if temp_download_uri:
+                    frappe.logger().info(f"[QB SYNC] Using TempDownloadUri from Attachable object for {attach_id}")
+                
+                # If not available in the response, call the download endpoint
+                if not temp_download_uri:
+                    download_endpoint = f"{base_url}/v3/company/{realm_id}/download/{attach_id}"
+                    
+                    try:
+                        # Refresh token if needed before getting download URL
+                        refresh_token_if_needed()
+                        
+                        # Call download endpoint to get TempDownloadUri
+                        # According to QuickBooks docs, this returns text/plain with a URL string
+                        download_headers = {
+                            "Authorization": f"Bearer {access_token}",
+                            "Accept": "text/plain"  # QuickBooks returns text/plain for download endpoint
+                        }
+                        
+                        temp_url_res = requests.get(download_endpoint, headers=download_headers, timeout=30)
+                        
+                        # Handle 401 - refresh token and retry
+                        if temp_url_res.status_code == 401:
+                            frappe.logger().info(f"[QB SYNC] Got 401 getting download URL for {attach_id}, refreshing token...")
+                            refresh_quickbooks_access_token()
+                            settings = frappe.get_single("QuickBooks Settings")  # Reload settings
+                            access_token = settings.access_token
+                            download_headers["Authorization"] = f"Bearer {access_token}"
+                            headers["Authorization"] = f"Bearer {access_token}"
+                            last_token_refresh = time.time()
+                            temp_url_res = requests.get(download_endpoint, headers=download_headers, timeout=30)
+                        
+                        temp_url_res.raise_for_status()
+                        
+                        # The response is text/plain and contains either:
+                        # 1. A plain URL string (most common)
+                        # 2. A JSON string with TempDownloadUri field
+                        response_text = temp_url_res.text.strip()
+                        
+                        # Try parsing as JSON first (in case it's JSON wrapped)
+                        try:
+                            temp_url_data = json.loads(response_text)
+                            temp_download_uri = temp_url_data.get("TempDownloadUri") or temp_url_data.get("tempDownloadUri")
+                        except (ValueError, json.JSONDecodeError):
+                            # If not JSON, it's likely a plain URL string
+                            # Check if it looks like a URL
+                            if response_text.startswith("http://") or response_text.startswith("https://"):
+                                temp_download_uri = response_text
+                            else:
+                                # Try to extract URL from quoted string
+                                if response_text.startswith('"') and response_text.endswith('"'):
+                                    temp_download_uri = response_text.strip('"')
+                                else:
+                                    temp_download_uri = response_text
+                        
+                        if not temp_download_uri:
+                            skipped.append({"id": attach_id, "reason": "no TempDownloadUri in response"})
+                            continue
+                        
+                    except requests.exceptions.Timeout:
+                        error_msg = (
+                            f"Timeout while fetching download URL from QuickBooks.\n"
+                            f"Attachable ID: {attach_id}\n"
+                            f"File Name: {file_name}\n"
+                            f"Item: {erp_item_name}\n"
+                            f"Download Endpoint: {download_endpoint}\n"
+                            f"Timeout: 30 seconds"
+                        )
+                        frappe.log_error(error_msg, "QuickBooks Item Images Sync - Download URL Timeout")
+                        skipped.append({"id": attach_id, "reason": "timeout getting download URL"})
+                        continue
+                    except Exception as e:
+                        error_msg = (
+                            f"Failed to get download URL from QuickBooks.\n"
+                            f"Attachable ID: {attach_id}\n"
+                            f"File Name: {file_name}\n"
+                            f"Item: {erp_item_name}\n"
+                            f"Download Endpoint: {download_endpoint}\n"
+                            f"Error: {str(e)}\n"
+                            f"{frappe.get_traceback()}"
+                        )
+                        frappe.log_error(error_msg, "QuickBooks Item Images Sync - Download URL Failed")
+                        skipped.append({"id": attach_id, "reason": f"failed to get download URL: {str(e)}"})
+                        continue
 
+                # -----------------------------------------------------------------------------------
+                # STEP 2: Download the actual image from temporary URL
+                # -----------------------------------------------------------------------------------
+                # Note: TempDownloadUri expires after 15 minutes, so we download immediately after getting it
                 try:
-                    # Use longer timeout for file downloads (images can be large)
-                    file_res = requests.get(
-                        download_url,
-                        headers={"Authorization": f"Bearer {access_token}"},
-                        timeout=120,  # 2 minutes for large images
+                    # Download the actual image from the temporary URL
+                    # No auth needed for the temp URL, but it may expire
+                    image_res = requests.get(
+                        temp_download_uri,
+                        timeout=60,  # 60 seconds timeout to avoid hanging on slow downloads
                         stream=True  # Stream download for better memory handling
                     )
-                    file_res.raise_for_status()
+                    
+                    # Check for 401 Unauthorized - URL might have expired
+                    if image_res.status_code == 401:
+                        # Try to get a fresh download URL and retry once
+                        frappe.logger().info(f"[QB SYNC] Got 401 for {attach_id}, fetching fresh download URL...")
+                        try:
+                            download_endpoint = f"{base_url}/v3/company/{realm_id}/download/{attach_id}"
+                            download_headers = {
+                                "Authorization": f"Bearer {access_token}",
+                                "Accept": "text/plain"
+                            }
+                            temp_url_res = requests.get(download_endpoint, headers=download_headers, timeout=30)
+                            temp_url_res.raise_for_status()
+                            response_text = temp_url_res.text.strip()
+                            
+                            # Parse the fresh URL
+                            try:
+                                temp_url_data = json.loads(response_text)
+                                temp_download_uri = temp_url_data.get("TempDownloadUri") or temp_url_data.get("tempDownloadUri")
+                            except (ValueError, json.JSONDecodeError):
+                                if response_text.startswith("http://") or response_text.startswith("https://"):
+                                    temp_download_uri = response_text
+                                elif response_text.startswith('"') and response_text.endswith('"'):
+                                    temp_download_uri = response_text.strip('"')
+                                else:
+                                    temp_download_uri = response_text
+                            
+                            if temp_download_uri:
+                                # Retry download with fresh URL
+                                image_res = requests.get(
+                                    temp_download_uri,
+                                    timeout=60,
+                                    stream=True
+                                )
+                                image_res.raise_for_status()
+                            else:
+                                raise Exception("Could not get fresh download URL")
+                        except Exception as retry_error:
+                            error_msg = (
+                                f"401 Unauthorized - Temporary download URL expired and retry failed.\n"
+                                f"Attachable ID: {attach_id}\n"
+                                f"File Name: {file_name}\n"
+                                f"Item: {erp_item_name}\n"
+                                f"Retry Error: {str(retry_error)}\n"
+                                f"Note: QuickBooks temporary URLs expire after 15 minutes"
+                            )
+                            frappe.log_error(error_msg, "QuickBooks Item Images Sync - URL Expired")
+                            skipped.append({"id": attach_id, "reason": "download URL expired (401)"})
+                            continue
+                    else:
+                        # For other status codes, raise the exception normally
+                        image_res.raise_for_status()
+                    
                     # Read content after successful response
-                    file_content = file_res.content
+                    file_content = image_res.content
+                    
+                    if not file_content or len(file_content) == 0:
+                        skipped.append({"id": attach_id, "reason": "empty file content"})
+                        continue
+                        
                 except requests.exceptions.Timeout:
-                    skipped.append({"id": attach_id, "reason": "download timeout"})
-                    frappe.logger().warn(f"[QB SYNC] Timeout downloading image {file_name} (ID: {attach_id})")
+                    error_msg = (
+                        f"Timeout while downloading image from temporary URL.\n"
+                        f"Attachable ID: {attach_id}\n"
+                        f"File Name: {file_name}\n"
+                        f"Item: {erp_item_name}\n"
+                        f"Download URL: {temp_download_uri[:200]}...\n"
+                        f"Timeout: 60 seconds"
+                    )
+                    frappe.log_error(error_msg, "QuickBooks Item Images Sync - Image Download Timeout")
+                    skipped.append({"id": attach_id, "reason": "timeout downloading image"})
+                    continue
+                except requests.exceptions.HTTPError as http_error:
+                    # Handle HTTP errors (including 401 if retry didn't work)
+                    if http_error.response and http_error.response.status_code == 401:
+                        error_msg = (
+                            f"401 Unauthorized - Temporary download URL expired.\n"
+                            f"Attachable ID: {attach_id}\n"
+                            f"File Name: {file_name}\n"
+                            f"Item: {erp_item_name}\n"
+                            f"Note: QuickBooks temporary URLs expire after 15 minutes. URL may have expired before download."
+                        )
+                        frappe.log_error(error_msg, "QuickBooks Item Images Sync - URL Expired")
+                        skipped.append({"id": attach_id, "reason": "download URL expired (401)"})
+                    else:
+                        error_msg = (
+                            f"HTTP error while downloading image from temporary URL.\n"
+                            f"Attachable ID: {attach_id}\n"
+                            f"File Name: {file_name}\n"
+                            f"Item: {erp_item_name}\n"
+                            f"Status Code: {http_error.response.status_code if http_error.response else 'N/A'}\n"
+                            f"Error: {str(http_error)}\n"
+                            f"Download URL: {temp_download_uri[:200]}..."
+                        )
+                        frappe.log_error(error_msg, "QuickBooks Item Images Sync - Image Download HTTP Error")
+                        skipped.append({"id": attach_id, "reason": f"HTTP {http_error.response.status_code if http_error.response else 'error'}"})
                     continue
                 except Exception as e:
+                    error_msg = (
+                        f"Failed to download image from temporary URL.\n"
+                        f"Attachable ID: {attach_id}\n"
+                        f"File Name: {file_name}\n"
+                        f"Item: {erp_item_name}\n"
+                        f"Download URL: {temp_download_uri[:200]}...\n"
+                        f"Error: {str(e)}\n"
+                        f"{frappe.get_traceback()}"
+                    )
+                    frappe.log_error(error_msg, "QuickBooks Item Images Sync - Image Download Failed")
                     skipped.append({"id": attach_id, "reason": f"download failed: {str(e)}"})
                     continue
 
                 # -----------------------------------------------------------------------------------
-                # SAVE FILE TO ERPNext PROPERLY
+                # STEP 3: Compress image if it's too large
+                # -----------------------------------------------------------------------------------
+                # Check file size and compress if needed before saving
+                from frappe.core.api.file import get_max_file_size
+                max_file_size = get_max_file_size()  # Returns size in bytes
+                file_size = len(file_content)
+                original_file_size = file_size
+                was_compressed = False
+                
+                # Compress image if it exceeds the size limit
+                if file_size > max_file_size:
+                    try:
+                        from PIL import Image
+                        import io
+                        
+                        # Determine image format from content type or file extension
+                        image_format = None
+                        if content_type:
+                            if "jpeg" in content_type.lower() or "jpg" in content_type.lower():
+                                image_format = "JPEG"
+                            elif "png" in content_type.lower():
+                                image_format = "PNG"
+                            elif "gif" in content_type.lower():
+                                image_format = "GIF"
+                        
+                        # Try to determine from file extension if content type doesn't help
+                        if not image_format:
+                            file_lower = file_name.lower()
+                            if file_lower.endswith((".jpg", ".jpeg")):
+                                image_format = "JPEG"
+                            elif file_lower.endswith(".png"):
+                                image_format = "PNG"
+                            elif file_lower.endswith(".gif"):
+                                image_format = "GIF"
+                        
+                        if image_format:
+                            frappe.logger().info(
+                                f"[QB SYNC] Compressing large image {file_name} "
+                                f"({file_size / (1024 * 1024):.2f} MB) for item {erp_item_name}"
+                            )
+                            
+                            # Open image
+                            image = Image.open(io.BytesIO(file_content))
+                            original_size = image.size
+                            
+                            # Determine if image has transparency (for PNG)
+                            has_transparency = image.mode in ('RGBA', 'LA', 'P') or 'transparency' in image.info
+                            
+                            # Progressive compression: try different quality/size combinations
+                            quality_levels = [85, 75, 65, 55, 45, 35]  # JPEG quality levels
+                            max_dimensions = [
+                                (2048, 2048),  # Start with reasonable size
+                                (1600, 1600),
+                                (1200, 1200),
+                                (1024, 1024),
+                                (800, 800),
+                                (600, 600)
+                            ]
+                            
+                            compressed_content = None
+                            for max_dim, quality in zip(max_dimensions, quality_levels):
+                                try:
+                                    # Create a copy for resizing
+                                    img_copy = image.copy()
+                                    
+                                    # Resize if needed (maintain aspect ratio)
+                                    if img_copy.size[0] > max_dim[0] or img_copy.size[1] > max_dim[1]:
+                                        img_copy.thumbnail(max_dim, Image.Resampling.LANCZOS)
+                                    
+                                    # Convert to RGB for JPEG (removes transparency)
+                                    if image_format == "JPEG" and img_copy.mode != "RGB":
+                                        # Create white background for transparent images
+                                        rgb_img = Image.new("RGB", img_copy.size, (255, 255, 255))
+                                        if img_copy.mode == "RGBA":
+                                            rgb_img.paste(img_copy, mask=img_copy.split()[3])  # Use alpha channel as mask
+                                        else:
+                                            rgb_img.paste(img_copy)
+                                        img_copy = rgb_img
+                                    
+                                    # Save with compression
+                                    output = io.BytesIO()
+                                    save_kwargs = {
+                                        "format": image_format,
+                                        "optimize": True
+                                    }
+                                    
+                                    if image_format == "JPEG":
+                                        save_kwargs["quality"] = quality
+                                        save_kwargs["progressive"] = True
+                                    elif image_format == "PNG":
+                                        # PNG compression level (0-9, 9 is maximum compression)
+                                        save_kwargs["compress_level"] = 9
+                                        if has_transparency:
+                                            # Preserve transparency for PNG
+                                            img_copy = img_copy.convert("RGBA")
+                                    
+                                    img_copy.save(output, **save_kwargs)
+                                    compressed_content = output.getvalue()
+                                    
+                                    # Check if compressed size is acceptable
+                                    if len(compressed_content) <= max_file_size:
+                                        file_content = compressed_content
+                                        file_size = len(file_content)
+                                        was_compressed = True
+                                        frappe.logger().info(
+                                            f"[QB SYNC] Successfully compressed {file_name} from "
+                                            f"{original_file_size / (1024 * 1024):.2f} MB to "
+                                            f"{file_size / (1024 * 1024):.2f} MB "
+                                            f"(size: {img_copy.size[0]}x{img_copy.size[1]}, quality: {quality})"
+                                        )
+                                        break
+                                    
+                                except Exception as compress_error:
+                                    frappe.logger().warn(
+                                        f"[QB SYNC] Compression attempt failed for {file_name}: {str(compress_error)}"
+                                    )
+                                    continue
+                            
+                            # If compression didn't work or still too large, log and skip
+                            if not compressed_content or len(compressed_content) > max_file_size:
+                                file_size_mb = original_file_size / (1024 * 1024)
+                                max_size_mb = max_file_size / (1024 * 1024)
+                                error_msg = (
+                                    f"File size exceeds maximum allowed limit even after compression.\n"
+                                    f"Attachable ID: {attach_id}\n"
+                                    f"File Name: {file_name}\n"
+                                    f"Item: {erp_item_name}\n"
+                                    f"Original File Size: {file_size_mb:.2f} MB\n"
+                                    f"Maximum Allowed: {max_size_mb:.2f} MB\n"
+                                    f"Note: Image too large to compress within limit"
+                                )
+                                frappe.log_error(error_msg, "QuickBooks Item Images Sync - File Too Large After Compression")
+                                skipped.append({
+                                    "id": attach_id, 
+                                    "reason": f"file too large even after compression ({file_size_mb:.2f} MB > {max_size_mb:.2f} MB limit)"
+                                })
+                                continue
+                        else:
+                            # Not a recognized image format, skip compression
+                            file_size_mb = file_size / (1024 * 1024)
+                            max_size_mb = max_file_size / (1024 * 1024)
+                            error_msg = (
+                                f"File size exceeds maximum allowed limit (not a compressible image format).\n"
+                                f"Attachable ID: {attach_id}\n"
+                                f"File Name: {file_name}\n"
+                                f"Item: {erp_item_name}\n"
+                                f"File Size: {file_size_mb:.2f} MB\n"
+                                f"Maximum Allowed: {max_size_mb:.2f} MB\n"
+                                f"Content Type: {content_type}"
+                            )
+                            frappe.log_error(error_msg, "QuickBooks Item Images Sync - File Too Large")
+                            skipped.append({
+                                "id": attach_id, 
+                                "reason": f"file too large ({file_size_mb:.2f} MB > {max_size_mb:.2f} MB limit)"
+                            })
+                            continue
+                            
+                    except Exception as compress_error:
+                        # If compression fails, log error but try to save original if it's under limit
+                        frappe.log_error(
+                            f"Image compression failed for {file_name}: {str(compress_error)}\n{frappe.get_traceback()}",
+                            "QuickBooks Item Images Sync - Compression Error"
+                        )
+                        # Fall through to check if original is under limit
+                        if file_size > max_file_size:
+                            file_size_mb = file_size / (1024 * 1024)
+                            max_size_mb = max_file_size / (1024 * 1024)
+                            skipped.append({
+                                "id": attach_id, 
+                                "reason": f"compression failed, file too large ({file_size_mb:.2f} MB > {max_size_mb:.2f} MB limit)"
+                            })
+                            continue
+
+                # -----------------------------------------------------------------------------------
+                # STEP 4: Save file to Frappe using proper Frappe file handling
                 # -----------------------------------------------------------------------------------
                 try:
-                    # Sanitize file name
-                    safe_file_name = file_name.replace(" ", "_").replace("/", "_")
                     
-                    # Get file path using frappe's utility
-                    file_path = frappe.utils.get_files_path(safe_file_name, is_private=0)
+                    # Sanitize file name for filesystem
+                    safe_file_name = file_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+                    # Remove any path components
+                    safe_file_name = os.path.basename(safe_file_name)
                     
-                    # Ensure directory exists
-                    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+                    # Use Frappe's file handling utilities
+                    from frappe.utils.file_manager import save_file
+                    from frappe.core.doctype.file.exceptions import MaxFileSizeReachedError
                     
-                    # Write file content to disk
-                    with open(file_path, "wb") as f:
-                        f.write(file_content)
+                    # Save file using Frappe's save_file which handles all the File doctype creation
+                    # Note: MaxFileSizeReachedError is imported above for use in exception handlers
+                    try:
+                        file_doc = save_file(
+                            fname=safe_file_name,
+                            content=file_content,
+                            dt="Item",
+                            dn=erp_item_name,
+                            folder=None,
+                            is_private=0,
+                            decode=False  # Already binary content
+                        )
+                    except MaxFileSizeReachedError as size_error:
+                        # Handle file size error from save_file (in case our check missed it)
+                        file_size_mb = len(file_content) / (1024 * 1024)
+                        error_msg = (
+                            f"File size exceeds maximum allowed limit (caught by save_file).\n"
+                            f"Attachable ID: {attach_id}\n"
+                            f"File Name: {file_name}\n"
+                            f"Item: {erp_item_name}\n"
+                            f"File Size: {file_size_mb:.2f} MB\n"
+                            f"Error: {str(size_error)}\n"
+                            f"Note: Increase 'Max File Size' in System Settings to allow larger files"
+                        )
+                        frappe.log_error(error_msg, "QuickBooks Item Images Sync - File Too Large")
+                        skipped.append({
+                            "id": attach_id, 
+                            "reason": f"file too large ({file_size_mb:.2f} MB exceeds limit)"
+                        })
+                        continue
                     
-                    # Calculate file size and hash (use content already in memory)
-                    file_size = len(file_content)
-                    content_hash = hashlib.md5(file_content).hexdigest()
-                    
-                    # Create File document with proper fields
-                    file_doc = frappe.get_doc({
-                        "doctype": "File",
-                        "file_name": safe_file_name,
-                        "file_url": f"/files/{safe_file_name}",
-                        "is_private": 0,
-                        "file_size": file_size,
-                        "content_hash": content_hash,
-                        "attached_to_doctype": "Item",
-                        "attached_to_name": erp_item_name
-                    })
-                    file_doc.insert(ignore_permissions=True)
+                    if not file_doc:
+                        raise Exception("save_file returned None")
                     
                     # Update item's image field if it's an image and item doesn't have one
-                    if content_type and content_type.startswith("image/"):
-                        item_doc = frappe.get_doc("Item", erp_item_name)
-                        if not item_doc.image:
-                            item_doc.image = file_doc.file_url
-                            item_doc.save(ignore_permissions=True)
+                    item_doc = frappe.get_doc("Item", erp_item_name)
+                    if not item_doc.image:
+                        item_doc.image = file_doc.file_url
+                        item_doc.save(ignore_permissions=True)
                     
                     # Commit after each file to avoid long transactions
                     frappe.db.commit()
@@ -1956,26 +3037,78 @@ def sync_quickbooks_item_images():
                     imported.append({
                         "item": erp_item_name,
                         "filename": safe_file_name,
-                        "qbo_attach_id": attach_id
+                        "qbo_attach_id": attach_id,
+                        "file_url": file_doc.file_url
                     })
                     
                     frappe.logger().info(f"[QB SYNC] Imported image {safe_file_name} for item {erp_item_name}")
                     
+                    processed_count += 1
+                    
                     # Small delay to avoid overwhelming the system
                     time.sleep(0.1)
 
-                except Exception as e:
-                    frappe.log_error(
-                        f"File save failed for {file_name}: {str(e)}\n{frappe.get_traceback()}",
-                        "QuickBooks Item Image Save Failed"
+                except MaxFileSizeReachedError as size_error:
+                    # Handle file size error (catch here too in case it wasn't caught earlier)
+                    file_size_mb = len(file_content) / (1024 * 1024)
+                    error_msg = (
+                        f"File size exceeds maximum allowed limit.\n"
+                        f"Attachable ID: {attach_id}\n"
+                        f"File Name: {file_name}\n"
+                        f"Item: {erp_item_name}\n"
+                        f"File Size: {file_size_mb:.2f} MB\n"
+                        f"Error: {str(size_error)}\n"
+                        f"Note: Increase 'Max File Size' in System Settings to allow larger files"
                     )
-                    skipped.append({"id": attach_id, "reason": f"file save failed: {str(e)}"})
+                    frappe.log_error(error_msg, "QuickBooks Item Images Sync - File Too Large")
+                    skipped.append({
+                        "id": attach_id, 
+                        "reason": f"file too large ({file_size_mb:.2f} MB exceeds limit)"
+                    })
+                    continue
+                except Exception as e:
+                    # Check if it's a file size error by checking the error message
+                    error_str = str(e)
+                    if "File size exceeded" in error_str or "MaxFileSizeReachedError" in str(type(e)):
+                        file_size_mb = len(file_content) / (1024 * 1024)
+                        error_msg = (
+                            f"File size exceeds maximum allowed limit (caught as generic exception).\n"
+                            f"Attachable ID: {attach_id}\n"
+                            f"File Name: {file_name}\n"
+                            f"Item: {erp_item_name}\n"
+                            f"File Size: {file_size_mb:.2f} MB\n"
+                            f"Error: {error_str}\n"
+                            f"Note: Increase 'Max File Size' in System Settings to allow larger files"
+                        )
+                        frappe.log_error(error_msg, "QuickBooks Item Images Sync - File Too Large")
+                        skipped.append({
+                            "id": attach_id, 
+                            "reason": f"file too large ({file_size_mb:.2f} MB exceeds limit)"
+                        })
+                        continue
+                    else:
+                        error_msg = (
+                            f"Failed to save file to Frappe File system.\n"
+                            f"Attachable ID: {attach_id}\n"
+                            f"File Name: {file_name} (sanitized: {safe_file_name})\n"
+                            f"Item: {erp_item_name}\n"
+                            f"File Size: {len(file_content)} bytes\n"
+                            f"Error: {str(e)}\n"
+                            f"{frappe.get_traceback()}"
+                        )
+                        frappe.log_error(error_msg, "QuickBooks Item Image Save Failed")
+                        skipped.append({"id": attach_id, "reason": f"file save failed: {str(e)}"})
 
             except Exception as e:
-                frappe.log_error(
-                    f"Error processing attachable {attach.get('Id', 'unknown')}: {str(e)}",
-                    "QuickBooks Item Image Processing Error"
+                error_msg = (
+                    f"Unexpected error while processing attachable.\n"
+                    f"Attachable ID: {attach.get('Id', 'unknown')}\n"
+                    f"File Name: {attach.get('FileName', 'unknown')}\n"
+                    f"Attachable Data: {json.dumps(attach, indent=2)[:1000]}\n"
+                    f"Error: {str(e)}\n"
+                    f"{frappe.get_traceback()}"
                 )
+                frappe.log_error(error_msg, "QuickBooks Item Image Processing Error")
                 skipped.append({"id": attach.get("Id", "unknown"), "reason": f"processing error: {str(e)}"})
 
         # Check if we need to fetch more
@@ -1987,6 +3120,30 @@ def sync_quickbooks_item_images():
     # -----------------------------------------------------------------------------------
     # SUMMARY OUTPUT
     # -----------------------------------------------------------------------------------
+    summary_msg = (
+        f"QuickBooks Item Images Sync completed.\n"
+        f"Total Imported: {len(imported)}\n"
+        f"Total Skipped: {len(skipped)}\n"
+        f"Success Rate: {(len(imported) / (len(imported) + len(skipped)) * 100) if (len(imported) + len(skipped)) > 0 else 0:.1f}%\n\n"
+    )
+    
+    if imported:
+        summary_msg += "Imported Items (first 10):\n"
+        for item in imported[:10]:
+            summary_msg += f"  - {item.get('item')}: {item.get('filename')}\n"
+        summary_msg += "\n"
+    
+    if skipped:
+        summary_msg += "Skipped Items (first 10):\n"
+        for item in skipped[:10]:
+            summary_msg += f"  - ID {item.get('id')}: {item.get('reason')}\n"
+    
+    # Log summary for tracking
+    frappe.log_error(
+        summary_msg,
+        "QuickBooks Item Images Sync - Summary"
+    )
+    
     frappe.logger().info(
         f"[QB SYNC] Completed item images sync job. Imported: {len(imported)}, Skipped: {len(skipped)}"
     )
