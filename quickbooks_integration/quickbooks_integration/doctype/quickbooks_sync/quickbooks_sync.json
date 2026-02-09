@@ -7,6 +7,15 @@
     "field_order": [
         "items_tab",
         "items_section",
+        "item_stats_section",
+        "item_total_count",
+        "item_synced_count",
+        "item_remaining_count",
+        "item_last_sync_date",
+        "column_break_item_stats",
+        "item_sync_status",
+        "item_sync_actions_section",
+        "item_sync_interval",
         "items_count",
         "column_break_items_1",
         "sync_items",
@@ -22,6 +31,14 @@
         "sync_item_images",
         "suppliers_tab",
         "suppliers_section",
+        "supplier_stats_section",
+        "supplier_total_count",
+        "supplier_synced_count",
+        "supplier_remaining_count",
+        "supplier_last_sync_date",
+        "column_break_supplier_stats",
+        "supplier_sync_status",
+        "supplier_sync_actions_section",
         "suppliers_count",
         "column_break_suppliers_1",
         "sync_suppliers",
@@ -34,6 +51,15 @@
         "refresh_suppliers",
         "customers_tab",
         "customers_section",
+        "customer_stats_section",
+        "customer_total_count",
+        "customer_synced_count",
+        "customer_remaining_count",
+        "customer_disabled_count",
+        "customer_last_sync_date",
+        "column_break_customer_stats",
+        "customer_sync_status",
+        "customer_sync_actions_section",
         "customers_count",
         "column_break_customers_1",
         "sync_customers",
@@ -44,11 +70,27 @@
         "refresh_customers",
         "stock_tab",
         "stock_section",
+        "stock_stats_section",
+        "stock_total_count",
+        "stock_synced_count",
+        "stock_remaining_count",
+        "stock_last_sync_date",
+        "column_break_stock_stats",
+        "stock_sync_status",
+        "stock_sync_actions_section",
         "stock_sync_interval",
         "column_break_stock_1",
         "sync_stock",
         "sales_orders_invoices_tab",
         "sales_orders_section",
+        "sales_order_stats_section",
+        "sales_order_total_count",
+        "sales_order_synced_count",
+        "sales_order_remaining_count",
+        "sales_order_last_sync_date",
+        "column_break_sales_order_stats",
+        "sales_order_sync_status",
+        "sales_order_sync_actions_section",
         "sales_orders_count",
         "column_break_sales_orders_1",
         "sync_sales_order",
@@ -81,6 +123,60 @@
             "fieldname": "items_section",
             "fieldtype": "Section Break",
             "label": "Items"
+        },
+        {
+            "fieldname": "item_stats_section",
+            "fieldtype": "Section Break",
+            "label": "Statistics"
+        },
+        {
+            "default": 0,
+            "fieldname": "item_total_count",
+            "fieldtype": "Int",
+            "label": "Total Items",
+            "read_only": 1
+        },
+        {
+            "default": 0,
+            "fieldname": "item_synced_count",
+            "fieldtype": "Int",
+            "label": "Synced",
+            "read_only": 1
+        },
+        {
+            "default": 0,
+            "fieldname": "item_remaining_count",
+            "fieldtype": "Int",
+            "label": "Remaining",
+            "read_only": 1
+        },
+        {
+            "fieldname": "item_last_sync_date",
+            "fieldtype": "Datetime",
+            "label": "Last Sync Date",
+            "read_only": 1
+        },
+        {
+            "fieldname": "column_break_item_stats",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "item_sync_status",
+            "fieldtype": "Data",
+            "label": "Status",
+            "read_only": 1
+        },
+        {
+            "fieldname": "item_sync_actions_section",
+            "fieldtype": "Section Break",
+            "label": "Sync Actions"
+        },
+        {
+            "fieldname": "item_sync_interval",
+            "fieldtype": "Select",
+            "label": "Item Sync Interval (Hours)",
+            "options": "\n1 Hour\n3 Hours\n6 Hours\n12 Hours\n24 Hours",
+            "description": "Schedule automatic item sync from QuickBooks to ERPNext"
         },
         {
             "fieldname": "items_count",
@@ -165,6 +261,53 @@
             "label": "Suppliers"
         },
         {
+            "fieldname": "supplier_stats_section",
+            "fieldtype": "Section Break",
+            "label": "Statistics"
+        },
+        {
+            "default": 0,
+            "fieldname": "supplier_total_count",
+            "fieldtype": "Int",
+            "label": "Total Suppliers",
+            "read_only": 1
+        },
+        {
+            "default": 0,
+            "fieldname": "supplier_synced_count",
+            "fieldtype": "Int",
+            "label": "Synced",
+            "read_only": 1
+        },
+        {
+            "default": 0,
+            "fieldname": "supplier_remaining_count",
+            "fieldtype": "Int",
+            "label": "Remaining",
+            "read_only": 1
+        },
+        {
+            "fieldname": "supplier_last_sync_date",
+            "fieldtype": "Datetime",
+            "label": "Last Sync Date",
+            "read_only": 1
+        },
+        {
+            "fieldname": "column_break_supplier_stats",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "supplier_sync_status",
+            "fieldtype": "Data",
+            "label": "Status",
+            "read_only": 1
+        },
+        {
+            "fieldname": "supplier_sync_actions_section",
+            "fieldtype": "Section Break",
+            "label": "Sync Actions"
+        },
+        {
             "fieldname": "suppliers_count",
             "fieldtype": "Int",
             "label": "Total Suppliers Count",
@@ -227,6 +370,60 @@
             "label": "Customers"
         },
         {
+            "fieldname": "customer_stats_section",
+            "fieldtype": "Section Break",
+            "label": "Statistics"
+        },
+        {
+            "default": 0,
+            "fieldname": "customer_total_count",
+            "fieldtype": "Int",
+            "label": "Total Customers",
+            "read_only": 1
+        },
+        {
+            "default": 0,
+            "fieldname": "customer_synced_count",
+            "fieldtype": "Int",
+            "label": "Synced",
+            "read_only": 1
+        },
+        {
+            "default": 0,
+            "fieldname": "customer_remaining_count",
+            "fieldtype": "Int",
+            "label": "Remaining",
+            "read_only": 1
+        },
+        {
+            "default": 0,
+            "fieldname": "customer_disabled_count",
+            "fieldtype": "Int",
+            "label": "Disabled (Not Synced)",
+            "read_only": 1
+        },
+        {
+            "fieldname": "customer_last_sync_date",
+            "fieldtype": "Datetime",
+            "label": "Last Sync Date",
+            "read_only": 1
+        },
+        {
+            "fieldname": "column_break_customer_stats",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "customer_sync_status",
+            "fieldtype": "Data",
+            "label": "Status",
+            "read_only": 1
+        },
+        {
+            "fieldname": "customer_sync_actions_section",
+            "fieldtype": "Section Break",
+            "label": "Sync Actions"
+        },
+        {
             "fieldname": "customers_count",
             "fieldtype": "Int",
             "label": "Total Customers Count",
@@ -281,6 +478,53 @@
             "label": "Stock"
         },
         {
+            "fieldname": "stock_stats_section",
+            "fieldtype": "Section Break",
+            "label": "Statistics"
+        },
+        {
+            "default": 0,
+            "fieldname": "stock_total_count",
+            "fieldtype": "Int",
+            "label": "Total Inventory Items",
+            "read_only": 1
+        },
+        {
+            "default": 0,
+            "fieldname": "stock_synced_count",
+            "fieldtype": "Int",
+            "label": "Synced",
+            "read_only": 1
+        },
+        {
+            "default": 0,
+            "fieldname": "stock_remaining_count",
+            "fieldtype": "Int",
+            "label": "Remaining",
+            "read_only": 1
+        },
+        {
+            "fieldname": "stock_last_sync_date",
+            "fieldtype": "Datetime",
+            "label": "Last Sync Date",
+            "read_only": 1
+        },
+        {
+            "fieldname": "column_break_stock_stats",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "stock_sync_status",
+            "fieldtype": "Data",
+            "label": "Status",
+            "read_only": 1
+        },
+        {
+            "fieldname": "stock_sync_actions_section",
+            "fieldtype": "Section Break",
+            "label": "Sync Actions"
+        },
+        {
             "fieldname": "stock_sync_interval",
             "fieldtype": "Select",
             "label": "Stock Sync Interval (Hours)",
@@ -292,10 +536,10 @@
             "fieldtype": "Column Break"
         },
         {
-            "description": "Quickbooks ---> Prosessed - Sync Stock & Reconciliation",
+            "description": "Sync stock quantities from QuickBooks to ERPNext",
             "fieldname": "sync_stock",
             "fieldtype": "Button",
-            "label": "Sync Stock & Reconciliation"
+            "label": "Sync Stock from QuickBooks"
         },
         {
             "fieldname": "sales_orders_invoices_tab",
@@ -306,6 +550,53 @@
             "fieldname": "sales_orders_section",
             "fieldtype": "Section Break",
             "label": "Sales Orders"
+        },
+        {
+            "fieldname": "sales_order_stats_section",
+            "fieldtype": "Section Break",
+            "label": "Statistics"
+        },
+        {
+            "default": 0,
+            "fieldname": "sales_order_total_count",
+            "fieldtype": "Int",
+            "label": "Total Sales Orders",
+            "read_only": 1
+        },
+        {
+            "default": 0,
+            "fieldname": "sales_order_synced_count",
+            "fieldtype": "Int",
+            "label": "Synced",
+            "read_only": 1
+        },
+        {
+            "default": 0,
+            "fieldname": "sales_order_remaining_count",
+            "fieldtype": "Int",
+            "label": "Remaining",
+            "read_only": 1
+        },
+        {
+            "fieldname": "sales_order_last_sync_date",
+            "fieldtype": "Datetime",
+            "label": "Last Sync Date",
+            "read_only": 1
+        },
+        {
+            "fieldname": "column_break_sales_order_stats",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "sales_order_sync_status",
+            "fieldtype": "Data",
+            "label": "Status",
+            "read_only": 1
+        },
+        {
+            "fieldname": "sales_order_sync_actions_section",
+            "fieldtype": "Section Break",
+            "label": "Sync Actions"
         },
         {
             "fieldname": "sales_orders_count",

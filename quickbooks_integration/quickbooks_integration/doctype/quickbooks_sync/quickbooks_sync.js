@@ -25,7 +25,15 @@ frappe.ui.form.on("QuickBooks Sync", {
             }
         });
 
-        refresh_all_counts(frm);
+        frm.add_custom_button(__("Refresh Statistics"), function () {
+            refresh_statistics(frm);
+        }, __("Actions"));
+
+        // Load counts/statistics once per form open to avoid "Document has been modified" (no repeated saves/reloads)
+        if (!frm._qb_stats_loaded) {
+            frm._qb_stats_loaded = true;
+            refresh_all_counts(frm);
+        }
     },
 
     /* ---------------- Customers ---------------- */
@@ -94,6 +102,33 @@ frappe.ui.form.on("QuickBooks Sync", {
     },
 
     /* ---------------- Items ---------------- */
+
+    item_sync_interval(frm) {
+        const field = frm.fields_dict.item_sync_interval;
+        if (!field) return;
+        const interval = field.get_value();
+        if (!interval) return;
+        const selectedInterval = interval;
+        frappe.call({
+            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.update_item_sync_cron_job",
+            args: { docname: frm.doc.name || frm.doctype, interval: selectedInterval },
+            freeze: true,
+            freeze_message: __("Updating item sync schedule...")
+        })
+            .then((r) => {
+                if (r?.message?.message) {
+                    frappe.show_alert({ message: r.message.message, indicator: "green" }, 5);
+                }
+                frm.reload_doc().then(() => {
+                    frm.set_value("item_sync_interval", selectedInterval);
+                    frm.refresh_field("item_sync_interval");
+                });
+            })
+            .catch(() => {
+                frappe.show_alert({ message: __("Failed to update item sync schedule."), indicator: "red" }, 5);
+                frm.reload_doc();
+            });
+    },
 
     sync_items(frm) {
         frappe.call({
@@ -239,67 +274,77 @@ frappe.ui.form.on("QuickBooks Sync", {
         });
     },
 
-    /* ---------------- Stock ---------------- */
+    /* ---------------- Stock (same pattern as MYOB Acumatica Sync) ---------------- */
 
     sync_stock(frm) {
         frappe.call({
-            method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_stock_sync_background",
-            callback: () => {
-                frappe.msgprint("Stock sync started.");
-                setTimeout(() => refresh_all_counts(frm), 2000);
-            }
+            method: "run_doc_method",
+            args: {
+                dt: frm.doctype,
+                dn: frm.doc.name || frm.doctype,
+                method: "sync_stock_from_quickbooks",
+            },
+            freeze: true,
+            freeze_message: __("Syncing Stock from QuickBooks..."),
+            callback: (r) => {
+                if (r.message && r.message.success !== false) {
+                    frappe.show_alert({
+                        message: __("Stock from QuickBooks sync started successfully"),
+                        indicator: "green",
+                    });
+                    setTimeout(() => refresh_all_counts(frm), 2000);
+                } else {
+                    frappe.show_alert({
+                        message: __("Sync failed: {0}", [r.message?.message || "Unknown error"]),
+                        indicator: "red",
+                    });
+                }
+            },
+            error: () => {
+                frappe.show_alert({
+                    message: __("An error occurred during sync"),
+                    indicator: "red",
+                });
+            },
         });
     },
     stock_sync_interval(frm) {
-        // Get the value directly from the field input element to ensure we have the selected value
         const field = frm.fields_dict.stock_sync_interval;
         if (!field) return;
-        
-        // Get value from the input element directly
+
         const interval = field.get_value();
         if (!interval) return;
-        
-        // Store the interval value to use after reload
+
         const selectedInterval = interval;
-        
+
         frappe.call({
             method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.update_stock_sync_cron_job",
             args: {
-                docname: frm.doc.name,
+                docname: frm.doc.name || frm.doctype,
                 interval: selectedInterval
             },
             freeze: true,
             freeze_message: __("Updating stock sync schedule...")
         })
-        .then(r => {
-            if (r?.message?.message) {
+            .then((r) => {
+                if (r?.message?.message) {
+                    frappe.show_alert(
+                        { message: r.message.message, indicator: "green" },
+                        5
+                    );
+                }
+                frm.reload_doc().then(() => {
+                    frm.set_value("stock_sync_interval", selectedInterval);
+                    frm.refresh_field("stock_sync_interval");
+                });
+            })
+            .catch(() => {
                 frappe.show_alert(
-                    {
-                        message: r.message.message,
-                        indicator: "green"
-                    },
+                    { message: __("Failed to update stock sync schedule."), indicator: "red" },
                     5
                 );
-            }
-    
-            // Reload the document to get the saved value from backend
-            frm.reload_doc().then(() => {
-                // Ensure the field shows the correct saved value
-                frm.set_value("stock_sync_interval", selectedInterval);
-                frm.refresh_field("stock_sync_interval");
+                frm.reload_doc();
             });
-        })
-        .catch((error) => {
-            frappe.show_alert(
-                {
-                    message: __("Failed to update stock sync schedule."),
-                    indicator: "red"
-                },
-                5
-            );
-            // Reload to restore previous value on error
-            frm.reload_doc();
-        });
     },
     /* ---------------- Sales Orders ---------------- */
 
@@ -461,18 +506,40 @@ frappe.ui.form.on("QuickBooks Sync", {
 
 /* ---------------- Counts ---------------- */
 
+function refresh_statistics(frm, show_alert = true) {
+    frappe.call({
+        method: "run_doc_method",
+        args: {
+            dt: frm.doctype,
+            dn: frm.doc.name || frm.doctype,
+            method: "refresh_statistics"
+        },
+        freeze: show_alert,
+        freeze_message: __("Refreshing statistics..."),
+        callback: (r) => {
+            if (r.message && r.message.success) {
+                // Single reload to avoid "Document has been modified" and keep client in sync with server
+                frm.reload_doc().then(() => {
+                    if (show_alert) {
+                        frappe.show_alert({ message: __("Statistics refreshed"), indicator: "blue" });
+                    }
+                });
+            } else if (show_alert) {
+                frappe.show_alert({ message: __("Failed to refresh statistics"), indicator: "red" });
+            }
+        }
+    });
+}
+
 const refresh_all_counts = (frm) => {
     frappe.call({
         method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.refresh_all_counts",
-        args: { docname: frm.doc.name },
+        args: { docname: frm.doc.name || frm.doctype },
+        freeze: false,
         callback: (r) => {
-            if (!r.message) return;
-
-            Object.keys(r.message).forEach(field => {
-                if (frm.fields_dict[field]) {
-                    frm.set_value(field, r.message[field]);
-                }
-            });
+            if (r.message && r.message.success !== false) {
+                frm.reload_doc();
+            }
         }
     });
 };
