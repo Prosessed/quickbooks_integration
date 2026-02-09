@@ -11,9 +11,329 @@ import frappe
 from frappe.utils import now
 from quickbooks_integration.api import refresh_quickbooks_access_token, sync_credit_memo_to_quickbooks, sync_selected_sales_invoices, sync_single_purchase_invoice_to_quickbooks, sync_single_sales_invoice
 from frappe import _
+import time
 class QuickBooksSync(Document):
-	pass
+	@frappe.whitelist()
+	def sync_stock_from_quickbooks(self):
+		"""Sync stock quantities from QuickBooks to ERPNext (triggered from UI)."""
+		try:
+			start_stock_sync_background()
+			return {
+				"success": True,
+				"message": _("Stock sync from QuickBooks has been started in the background."),
+			}
+		except Exception as e:
+			frappe.log_error(
+				message=f"Error starting stock sync from QuickBooks: {str(e)}\n{frappe.get_traceback()}",
+				title="QuickBooks Stock Sync Start Error",
+			)
+			return {
+				"success": False,
+				"message": _("Error starting stock sync: {0}").format(str(e)),
+			}
 
+	@frappe.whitelist()
+	def update_stock_sync_cron_job(self, interval: str | None = None):
+		"""
+		Create or update Scheduled Job Type for QuickBooks stock sync (same pattern as Xero/MYOB).
+		Uses cron_format and stopped as per Frappe Scheduled Job Type.
+		"""
+		interval_text = (interval or self.stock_sync_interval or "").strip()
+		if not interval_text:
+			frappe.throw(_("Stock Sync Interval is not set."))
+
+		interval_map = {
+			"1 Hour": 1,
+			"3 Hours": 3,
+			"6 Hours": 6,
+			"12 Hours": 12,
+			"24 Hours": 24,
+		}
+		hours = interval_map.get(interval_text)
+		if not hours:
+			frappe.throw(_("Invalid stock sync interval: {0}").format(interval_text))
+
+		cron_expression = f"0 */{hours} * * *"
+		method_path = (
+			"quickbooks_integration.quickbooks_integration.doctype."
+			"quickbooks_sync.quickbooks_sync.start_stock_sync_background"
+		)
+
+		job_name = frappe.db.get_value(
+			"Scheduled Job Type",
+			{"method": method_path},
+			"name",
+		)
+
+		if job_name:
+			job = frappe.get_doc("Scheduled Job Type", job_name)
+			job.cron_format = cron_expression
+			job.frequency = "Cron"
+			job.stopped = 0
+			job.save(ignore_permissions=True)
+			status = "updated"
+		else:
+			job = frappe.new_doc("Scheduled Job Type")
+			job.method = method_path
+			job.cron_format = cron_expression
+			job.frequency = "Cron"
+			job.stopped = 0
+			job.insert(ignore_permissions=True)
+			job.db_set("stopped", 0)
+			status = "created"
+
+		self.stock_sync_interval = interval_text
+		self.save(ignore_permissions=True)
+		frappe.db.commit()
+
+		return {
+			"status": status,
+			"message": _("Stock sync scheduled every {0}").format(interval_text.lower()),
+			"cron": cron_expression,
+		}
+
+	@frappe.whitelist()
+	def update_item_sync_cron_job(self, interval: str | None = None):
+		"""
+		Create or update Scheduled Job Type for QuickBooks item sync (runs start_item_background).
+		"""
+		interval_text = (interval or self.item_sync_interval or "").strip()
+		if not interval_text:
+			frappe.throw(_("Item Sync Interval is not set."))
+
+		interval_map = {
+			"1 Hour": 1,
+			"3 Hours": 3,
+			"6 Hours": 6,
+			"12 Hours": 12,
+			"24 Hours": 24,
+		}
+		hours = interval_map.get(interval_text)
+		if not hours:
+			frappe.throw(_("Invalid item sync interval: {0}").format(interval_text))
+
+		cron_expression = f"0 */{hours} * * *"
+		method_path = (
+			"quickbooks_integration.quickbooks_integration.doctype."
+			"quickbooks_sync.quickbooks_sync.start_item_background"
+		)
+
+		job_name = frappe.db.get_value(
+			"Scheduled Job Type",
+			{"method": method_path},
+			"name",
+		)
+
+		if job_name:
+			job = frappe.get_doc("Scheduled Job Type", job_name)
+			job.cron_format = cron_expression
+			job.frequency = "Cron"
+			job.stopped = 0
+			job.save(ignore_permissions=True)
+			status = "updated"
+		else:
+			job = frappe.new_doc("Scheduled Job Type")
+			job.method = method_path
+			job.cron_format = cron_expression
+			job.frequency = "Cron"
+			job.stopped = 0
+			job.insert(ignore_permissions=True)
+			job.db_set("stopped", 0)
+			status = "created"
+
+		self.item_sync_interval = interval_text
+		self.save(ignore_permissions=True)
+		frappe.db.commit()
+
+		return {
+			"status": status,
+			"message": _("Item sync scheduled every {0}").format(interval_text.lower()),
+			"cron": cron_expression,
+		}
+
+	@frappe.whitelist()
+	def refresh_statistics(self):
+		"""Refresh all statistics (total, synced, remaining, status) for Items, Suppliers, Customers, Stock, Sales Orders – same pattern as MYOB Acumatica."""
+		try:
+			frappe.db.rollback()
+			stats = {}
+			stats["items"] = self._get_item_statistics()
+			stats["suppliers"] = self._get_supplier_statistics()
+			stats["customers"] = self._get_customer_statistics()
+			stats["stock"] = self._get_stock_statistics()
+			stats["sales_orders"] = self._get_sales_order_statistics()
+
+			d = stats["items"]
+			self.item_total_count = d.get("total", 0)
+			self.item_synced_count = d.get("synced", 0)
+			self.item_remaining_count = d.get("remaining", 0)
+			self.item_sync_status = d.get("status", "Not Started")
+			self.item_last_sync_date = d.get("last_sync_date")
+
+			d = stats["suppliers"]
+			self.supplier_total_count = d.get("total", 0)
+			self.supplier_synced_count = d.get("synced", 0)
+			self.supplier_remaining_count = d.get("remaining", 0)
+			self.supplier_sync_status = d.get("status", "Not Started")
+			self.supplier_last_sync_date = d.get("last_sync_date")
+
+			d = stats["customers"]
+			self.customer_total_count = d.get("total", 0)
+			self.customer_synced_count = d.get("synced", 0)
+			self.customer_remaining_count = d.get("remaining", 0)
+			self.customer_disabled_count = d.get("disabled", 0)
+			self.customer_sync_status = d.get("status", "Not Started")
+			self.customer_last_sync_date = d.get("last_sync_date")
+
+			d = stats["stock"]
+			self.stock_total_count = d.get("total", 0)
+			self.stock_synced_count = d.get("synced", 0)
+			self.stock_remaining_count = d.get("remaining", 0)
+			self.stock_sync_status = d.get("status", "Not Started")
+			self.stock_last_sync_date = d.get("last_sync_date")
+
+			d = stats["sales_orders"]
+			self.sales_order_total_count = d.get("total", 0)
+			self.sales_order_synced_count = d.get("synced", 0)
+			self.sales_order_remaining_count = d.get("remaining", 0)
+			self.sales_order_sync_status = d.get("status", "Not Started")
+			self.sales_order_last_sync_date = d.get("last_sync_date")
+
+			self.save(ignore_permissions=True)
+			frappe.db.commit()
+			return {"success": True, "message": _("Statistics refreshed successfully")}
+		except Exception as e:
+			frappe.log_error(
+				message=f"Error refreshing QuickBooks Sync statistics: {str(e)}\n{frappe.get_traceback()}",
+				title="QuickBooks Sync Statistics Error",
+			)
+			return {"success": False, "message": _("Error refreshing statistics: {0}").format(str(e))}
+
+	def _get_item_statistics(self):
+		total = frappe.db.count("Item")
+		synced = frappe.db.count("Item", filters={"custom_quickbooks_item_id": ["!=", ""]})
+		remaining = total - synced
+		if total == 0:
+			status = "No Data"
+		elif synced == total:
+			status = "All Synced"
+		elif synced > 0:
+			status = "Partially Synced"
+		else:
+			status = "Not Started"
+		last_sync_date = frappe.db.get_value(
+			"Item",
+			{"custom_quickbooks_item_id": ["!=", ""]},
+			"modified",
+			order_by="modified desc",
+		)
+		return {"total": total, "synced": synced, "remaining": remaining, "status": status, "last_sync_date": last_sync_date}
+
+	def _get_supplier_statistics(self):
+		total = frappe.db.count("Supplier")
+		synced = frappe.db.count("Supplier", filters={"custom_quickbooks_supplier_id": ["!=", ""]})
+		remaining = total - synced
+		if total == 0:
+			status = "No Data"
+		elif synced == total:
+			status = "All Synced"
+		elif synced > 0:
+			status = "Partially Synced"
+		else:
+			status = "Not Started"
+		last_sync_date = frappe.db.get_value(
+			"Supplier",
+			{"custom_quickbooks_supplier_id": ["!=", ""]},
+			"modified",
+			order_by="modified desc",
+		)
+		return {"total": total, "synced": synced, "remaining": remaining, "status": status, "last_sync_date": last_sync_date}
+
+	def _get_customer_statistics(self):
+		total = frappe.db.count("Customer")
+		synced = frappe.db.count("Customer", filters={"custom_quickbooks_customer_id": ["!=", ""]})
+		disabled_not_synced = frappe.db.sql(
+			"""
+			SELECT COUNT(*) FROM `tabCustomer`
+			WHERE disabled = 1
+			  AND (IFNULL(custom_quickbooks_customer_id, '') = '')
+			"""
+		)[0][0]
+		remaining = total - synced - disabled_not_synced
+		if total == 0:
+			status = "No Data"
+		elif synced == total:
+			status = "All Synced"
+		elif synced > 0:
+			status = "Partially Synced"
+		else:
+			status = "Not Started"
+		last_sync_date = frappe.db.get_value(
+			"Customer",
+			{"custom_quickbooks_customer_id": ["!=", ""]},
+			"modified",
+			order_by="modified desc",
+		)
+		return {
+			"total": total,
+			"synced": synced,
+			"remaining": remaining,
+			"disabled": disabled_not_synced,
+			"status": status,
+			"last_sync_date": last_sync_date,
+		}
+
+	def _get_stock_statistics(self):
+		# Inventory items (is_stock_item = 1) that have QuickBooks Item ID are considered synced for stock
+		total = frappe.db.count("Item", filters={"is_stock_item": 1})
+		synced = frappe.db.count(
+			"Item",
+			filters={"is_stock_item": 1, "custom_quickbooks_item_id": ["!=", ""]},
+		)
+		remaining = total - synced
+		if total == 0:
+			status = "No Data"
+		elif synced == total:
+			status = "All Synced"
+		elif synced > 0:
+			status = "Partially Synced"
+		else:
+			status = "Not Started"
+		last_sync_date = frappe.db.get_value(
+			"Item",
+			{"is_stock_item": 1, "custom_quickbooks_item_id": ["!=", ""]},
+			"modified",
+			order_by="modified desc",
+		)
+		return {"total": total, "synced": synced, "remaining": remaining, "status": status, "last_sync_date": last_sync_date}
+
+	def _get_sales_order_statistics(self):
+		total = frappe.db.count("Sales Order", filters={"docstatus": ["!=", 2]})
+		# Synced if they have QuickBooks Sales Order ID (custom field)
+		synced = frappe.db.sql(
+			"""
+			SELECT COUNT(*) FROM `tabSales Order`
+			WHERE docstatus != 2
+			  AND IFNULL(quickbooks_sales_order_id, '') != ''
+			""",
+			as_list=True,
+		)[0][0]
+		remaining = total - synced
+		if total == 0:
+			status = "No Data"
+		elif synced == total:
+			status = "All Synced"
+		elif synced > 0:
+			status = "Partially Synced"
+		else:
+			status = "Not Started"
+		last_sync_date = frappe.db.get_value(
+			"Sales Order",
+			{"docstatus": ["!=", 2], "quickbooks_sales_order_id": ["!=", ""]},
+			"modified",
+			order_by="modified desc",
+		)
+		return {"total": total, "synced": synced, "remaining": remaining, "status": status, "last_sync_date": last_sync_date}
 
 
 @frappe.whitelist()
@@ -222,9 +542,11 @@ def handle_sales_order_submit(doc, method):
             docname=doc.name,
             enqueue_after_commit=True
         )
+
         
         frappe.msgprint("Sales Order synchronization with QuickBooks has started.", indicator="green")
         frappe.logger().info(f"[QBO] Enqueued Sales Order {doc.name} for QuickBooks sync")
+        time.sleep(10)
         
     except Exception as e:
         # Log error but don't block Sales Order submission
@@ -2119,50 +2441,34 @@ def create_stock_reconciliation(reconciliation_items, is_last_page=False):
 @frappe.whitelist()
 def refresh_all_counts(docname: str):
     """
-    Refresh all count fields for the QuickBooks Sync doctype.
-    Returns a dictionary with all counts.
+    Refresh all count fields and statistics for the QuickBooks Sync doctype (same pattern as MYOB Acumatica).
+    Calls refresh_statistics to populate total/synced/remaining/status for each tab.
     """
     doc = frappe.get_doc("QuickBooks Sync", docname)
-    
-    # Items count
-    items_count = frappe.db.count("Item")
-    doc.items_count = items_count
-    
-    # Suppliers count
-    suppliers_count = frappe.db.count("Supplier")
-    doc.suppliers_count = suppliers_count
-    
-    # Customers count
-    customers_count = frappe.db.count("Customer")
-    doc.customers_count = customers_count
-    
-    # Item Images count (items with images)
-    item_images_count = frappe.db.count("Item", {"image": ["!=", ""]})
-    doc.item_images_count = item_images_count
-    
-    # Sales Orders count (excluding cancelled)
-    sales_orders_count = frappe.db.count("Sales Order", {"docstatus": ["in", [0, 1]]})
-    doc.sales_orders_count = sales_orders_count
-    
-    # Sales Invoices count (excluding cancelled)
-    sales_invoices_count = frappe.db.count("Sales Invoice", {"docstatus": ["in", [0, 1]]})
-    doc.sales_invoices_count = sales_invoices_count
-    
-    # Purchase Invoices count (excluding cancelled)
-    purchase_invoices_count = frappe.db.count("Purchase Invoice", {"docstatus": ["in", [0, 1]]})
-    doc.purchase_invoices_count = purchase_invoices_count
-    
+    # Populate Statistics section (total, synced, remaining, status) for all tabs
+    doc.refresh_statistics()
+
+    # Legacy counts (kept for backward compatibility)
+    doc.items_count = frappe.db.count("Item")
+    doc.suppliers_count = frappe.db.count("Supplier")
+    doc.customers_count = frappe.db.count("Customer")
+    doc.item_images_count = frappe.db.count("Item", {"image": ["!=", ""]})
+    doc.sales_orders_count = frappe.db.count("Sales Order", {"docstatus": ["in", [0, 1]]})
+    doc.sales_invoices_count = frappe.db.count("Sales Invoice", {"docstatus": ["in", [0, 1]]})
+    doc.purchase_invoices_count = frappe.db.count("Purchase Invoice", {"docstatus": ["in", [0, 1]]})
+
     doc.save(ignore_permissions=True)
     frappe.db.commit()
-    
+
     return {
-        "items_count": items_count,
-        "suppliers_count": suppliers_count,
-        "customers_count": customers_count,
-        "item_images_count": item_images_count,
-        "sales_orders_count": sales_orders_count,
-        "sales_invoices_count": sales_invoices_count,
-        "purchase_invoices_count": purchase_invoices_count
+        "success": True,
+        "items_count": doc.items_count,
+        "suppliers_count": doc.suppliers_count,
+        "customers_count": doc.customers_count,
+        "item_images_count": doc.item_images_count,
+        "sales_orders_count": doc.sales_orders_count,
+        "sales_invoices_count": doc.sales_invoices_count,
+        "purchase_invoices_count": doc.purchase_invoices_count,
     }
 
 @frappe.whitelist()
@@ -2710,75 +3016,13 @@ def sync_selected_sales_orders(docname: str, selected_sales_orders: list):
 
 @frappe.whitelist()
 def update_stock_sync_cron_job(docname: str, interval: str | None = None):
-    """
-    Create or update Scheduled Job Type for QuickBooks stock sync.
-    """
-
+    """Delegate to doc method (same pattern as Xero)."""
     doc = frappe.get_doc("QuickBooks Sync", docname)
+    return doc.update_stock_sync_cron_job(interval=interval)
 
-    interval_text = (interval or doc.stock_sync_interval or "").strip()
-    if not interval_text:
-        frappe.throw("Stock Sync Interval is not set.")
 
-    interval_map = {
-        "1 Hour": 1,
-        "3 Hours": 3,
-        "6 Hours": 6,
-        "12 Hours": 12,
-        "24 Hours": 24,
-    }
-
-    hours = interval_map.get(interval_text)
-    if not hours:
-        frappe.throw(f"Invalid stock sync interval: {interval_text}")
-
-    cron_expression = f"0 */{hours} * * *"
-
-    method_path = (
-        "quickbooks_integration.quickbooks_integration.doctype."
-        "quickbooks_sync.quickbooks_sync.start_stock_sync_background"
-    )
-
-    # 🔑 ALWAYS lookup by method
-    job_name = frappe.db.get_value(
-        "Scheduled Job Type",
-        {"method": method_path},
-        "name"
-    )
-
-    if job_name:
-        job = frappe.get_doc("Scheduled Job Type", job_name)
-
-        job.cron_expression = cron_expression
-        job.frequency = "Cron"
-        job.enabled = 1
-        job.save(ignore_permissions=True)
-
-        status = "updated"
-    else:
-        job = frappe.new_doc("Scheduled Job Type")
-
-        # DO NOT set name manually
-        job.method = method_path
-        job.cron_expression = cron_expression
-        job.frequency = "All"  # temporary safe value
-        job.enabled = 1
-
-        job.insert(ignore_permissions=True)
-
-        # Switch to Cron AFTER insert
-        job.db_set("frequency", "Cron")
-        job.db_set("enabled", 1)
-
-        status = "created"
-
-    # Save the stock_sync_interval value to the document
-    doc.stock_sync_interval = interval_text
-    doc.save(ignore_permissions=True)
-    frappe.db.commit()
-
-    return {
-        "status": status,
-        "message": f"Stock sync scheduled every {interval_text.lower()}",
-        "cron": cron_expression,
-    }
+@frappe.whitelist()
+def update_item_sync_cron_job(docname: str, interval: str | None = None):
+    """Delegate to doc method for item sync schedule."""
+    doc = frappe.get_doc("QuickBooks Sync", docname)
+    return doc.update_item_sync_cron_job(interval=interval)

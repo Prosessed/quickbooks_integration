@@ -153,7 +153,7 @@ doctype_js = {
 
 scheduler_events = {
 	"cron": {
-		"0 */12 * * *": [
+		"0 */6 * * *": [
 			"quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.start_stock_sync_background"
 		]
 	}
