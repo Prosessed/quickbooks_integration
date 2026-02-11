@@ -98,6 +98,13 @@
         "sales_order_list",
         "refresh_sales_orders",
         "sync_sales_invoices_section",
+        "sales_invoice_stats_section",
+        "sales_invoice_total_count",
+        "sales_invoice_synced_count",
+        "sales_invoice_remaining_count",
+        "sales_invoice_last_sync_date",
+        "column_break_sales_invoice_stats",
+        "sales_invoice_sync_status",
         "sales_invoices_count",
         "column_break_sales_invoices_1",
         "sync_sales_invoices",
@@ -106,6 +113,13 @@
         "sales_invoice_list",
         "purchase_invoices_tab",
         "sync_purchase_invoices_section",
+        "purchase_invoice_stats_section",
+        "purchase_invoice_total_count",
+        "purchase_invoice_synced_count",
+        "purchase_invoice_remaining_count",
+        "purchase_invoice_last_sync_date",
+        "column_break_purchase_invoice_stats",
+        "purchase_invoice_sync_status",
         "purchase_invoices_count",
         "column_break_purchase_invoices_1",
         "sync_purchase_invoices",
@@ -638,6 +652,48 @@
             "label": "Sync Sales Invoices"
         },
         {
+            "fieldname": "sales_invoice_stats_section",
+            "fieldtype": "Section Break",
+            "label": "Statistics"
+        },
+        {
+            "default": 0,
+            "fieldname": "sales_invoice_total_count",
+            "fieldtype": "Int",
+            "label": "Total Sales Invoices",
+            "read_only": 1
+        },
+        {
+            "default": 0,
+            "fieldname": "sales_invoice_synced_count",
+            "fieldtype": "Int",
+            "label": "Synced",
+            "read_only": 1
+        },
+        {
+            "default": 0,
+            "fieldname": "sales_invoice_remaining_count",
+            "fieldtype": "Int",
+            "label": "Remaining",
+            "read_only": 1
+        },
+        {
+            "fieldname": "sales_invoice_last_sync_date",
+            "fieldtype": "Datetime",
+            "label": "Last Sync Date",
+            "read_only": 1
+        },
+        {
+            "fieldname": "column_break_sales_invoice_stats",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "sales_invoice_sync_status",
+            "fieldtype": "Data",
+            "label": "Status",
+            "read_only": 1
+        },
+        {
             "fieldname": "sales_invoices_count",
             "fieldtype": "Int",
             "label": "Total Sales Invoices Count",
@@ -680,6 +736,48 @@
             "fieldname": "sync_purchase_invoices_section",
             "fieldtype": "Section Break",
             "label": "Sync Purchase Invoices"
+        },
+        {
+            "fieldname": "purchase_invoice_stats_section",
+            "fieldtype": "Section Break",
+            "label": "Statistics"
+        },
+        {
+            "default": 0,
+            "fieldname": "purchase_invoice_total_count",
+            "fieldtype": "Int",
+            "label": "Total Purchase Invoices",
+            "read_only": 1
+        },
+        {
+            "default": 0,
+            "fieldname": "purchase_invoice_synced_count",
+            "fieldtype": "Int",
+            "label": "Synced",
+            "read_only": 1
+        },
+        {
+            "default": 0,
+            "fieldname": "purchase_invoice_remaining_count",
+            "fieldtype": "Int",
+            "label": "Remaining",
+            "read_only": 1
+        },
+        {
+            "fieldname": "purchase_invoice_last_sync_date",
+            "fieldtype": "Datetime",
+            "label": "Last Sync Date",
+            "read_only": 1
+        },
+        {
+            "fieldname": "column_break_purchase_invoice_stats",
+            "fieldtype": "Column Break"
+        },
+        {
+            "fieldname": "purchase_invoice_sync_status",
+            "fieldtype": "Data",
+            "label": "Status",
+            "read_only": 1
         },
         {
             "fieldname": "purchase_invoices_count",

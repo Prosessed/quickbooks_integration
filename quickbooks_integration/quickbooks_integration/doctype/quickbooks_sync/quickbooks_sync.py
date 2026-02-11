@@ -12,6 +12,7 @@ from frappe.utils import now
 from quickbooks_integration.api import refresh_quickbooks_access_token, sync_credit_memo_to_quickbooks, sync_selected_sales_invoices, sync_single_purchase_invoice_to_quickbooks, sync_single_sales_invoice
 from frappe import _
 import time
+
 class QuickBooksSync(Document):
 	@frappe.whitelist()
 	def sync_stock_from_quickbooks(self):
@@ -34,10 +35,7 @@ class QuickBooksSync(Document):
 
 	@frappe.whitelist()
 	def update_stock_sync_cron_job(self, interval: str | None = None):
-		"""
-		Create or update Scheduled Job Type for QuickBooks stock sync (same pattern as Xero/MYOB).
-		Uses cron_format and stopped as per Frappe Scheduled Job Type.
-		"""
+		"""Create or update Scheduled Job Type for QuickBooks stock sync."""
 		interval_text = (interval or self.stock_sync_interval or "").strip()
 		if not interval_text:
 			frappe.throw(_("Stock Sync Interval is not set."))
@@ -59,29 +57,34 @@ class QuickBooksSync(Document):
 			"quickbooks_sync.quickbooks_sync.start_stock_sync_background"
 		)
 
-		job_name = frappe.db.get_value(
+		# Check if job already exists
+		existing_job = frappe.db.get_value(
 			"Scheduled Job Type",
 			{"method": method_path},
-			"name",
+			"name"
 		)
 
-		if job_name:
-			job = frappe.get_doc("Scheduled Job Type", job_name)
+		if existing_job:
+			# Update existing job
+			job = frappe.get_doc("Scheduled Job Type", existing_job)
 			job.cron_format = cron_expression
 			job.frequency = "Cron"
 			job.stopped = 0
 			job.save(ignore_permissions=True)
 			status = "updated"
 		else:
-			job = frappe.new_doc("Scheduled Job Type")
-			job.method = method_path
-			job.cron_format = cron_expression
-			job.frequency = "Cron"
-			job.stopped = 0
+			# Create new job
+			job = frappe.get_doc({
+				"doctype": "Scheduled Job Type",
+				"method": method_path,
+				"cron_format": cron_expression,
+				"frequency": "Cron",
+				"stopped": 0
+			})
 			job.insert(ignore_permissions=True)
-			job.db_set("stopped", 0)
 			status = "created"
 
+		# Save interval to settings
 		self.stock_sync_interval = interval_text
 		self.save(ignore_permissions=True)
 		frappe.db.commit()
@@ -89,65 +92,6 @@ class QuickBooksSync(Document):
 		return {
 			"status": status,
 			"message": _("Stock sync scheduled every {0}").format(interval_text.lower()),
-			"cron": cron_expression,
-		}
-
-	@frappe.whitelist()
-	def update_item_sync_cron_job(self, interval: str | None = None):
-		"""
-		Create or update Scheduled Job Type for QuickBooks item sync (runs start_item_background).
-		"""
-		interval_text = (interval or self.item_sync_interval or "").strip()
-		if not interval_text:
-			frappe.throw(_("Item Sync Interval is not set."))
-
-		interval_map = {
-			"1 Hour": 1,
-			"3 Hours": 3,
-			"6 Hours": 6,
-			"12 Hours": 12,
-			"24 Hours": 24,
-		}
-		hours = interval_map.get(interval_text)
-		if not hours:
-			frappe.throw(_("Invalid item sync interval: {0}").format(interval_text))
-
-		cron_expression = f"0 */{hours} * * *"
-		method_path = (
-			"quickbooks_integration.quickbooks_integration.doctype."
-			"quickbooks_sync.quickbooks_sync.start_item_background"
-		)
-
-		job_name = frappe.db.get_value(
-			"Scheduled Job Type",
-			{"method": method_path},
-			"name",
-		)
-
-		if job_name:
-			job = frappe.get_doc("Scheduled Job Type", job_name)
-			job.cron_format = cron_expression
-			job.frequency = "Cron"
-			job.stopped = 0
-			job.save(ignore_permissions=True)
-			status = "updated"
-		else:
-			job = frappe.new_doc("Scheduled Job Type")
-			job.method = method_path
-			job.cron_format = cron_expression
-			job.frequency = "Cron"
-			job.stopped = 0
-			job.insert(ignore_permissions=True)
-			job.db_set("stopped", 0)
-			status = "created"
-
-		self.item_sync_interval = interval_text
-		self.save(ignore_permissions=True)
-		frappe.db.commit()
-
-		return {
-			"status": status,
-			"message": _("Item sync scheduled every {0}").format(interval_text.lower()),
 			"cron": cron_expression,
 		}
 
@@ -162,6 +106,8 @@ class QuickBooksSync(Document):
 			stats["customers"] = self._get_customer_statistics()
 			stats["stock"] = self._get_stock_statistics()
 			stats["sales_orders"] = self._get_sales_order_statistics()
+			stats["sales_invoices"] = self._get_sales_invoice_statistics()
+			stats["purchase_invoices"] = self._get_purchase_invoice_statistics()
 
 			d = stats["items"]
 			self.item_total_count = d.get("total", 0)
@@ -198,6 +144,20 @@ class QuickBooksSync(Document):
 			self.sales_order_remaining_count = d.get("remaining", 0)
 			self.sales_order_sync_status = d.get("status", "Not Started")
 			self.sales_order_last_sync_date = d.get("last_sync_date")
+
+			d = stats["sales_invoices"]
+			self.sales_invoice_total_count = d.get("total", 0)
+			self.sales_invoice_synced_count = d.get("synced", 0)
+			self.sales_invoice_remaining_count = d.get("remaining", 0)
+			self.sales_invoice_sync_status = d.get("status", "Not Started")
+			self.sales_invoice_last_sync_date = d.get("last_sync_date")
+
+			d = stats["purchase_invoices"]
+			self.purchase_invoice_total_count = d.get("total", 0)
+			self.purchase_invoice_synced_count = d.get("synced", 0)
+			self.purchase_invoice_remaining_count = d.get("remaining", 0)
+			self.purchase_invoice_sync_status = d.get("status", "Not Started")
+			self.purchase_invoice_last_sync_date = d.get("last_sync_date")
 
 			self.save(ignore_permissions=True)
 			frappe.db.commit()
@@ -330,6 +290,60 @@ class QuickBooksSync(Document):
 		last_sync_date = frappe.db.get_value(
 			"Sales Order",
 			{"docstatus": ["!=", 2], "quickbooks_sales_order_id": ["!=", ""]},
+			"modified",
+			order_by="modified desc",
+		)
+		return {"total": total, "synced": synced, "remaining": remaining, "status": status, "last_sync_date": last_sync_date}
+
+	def _get_sales_invoice_statistics(self):
+		total = frappe.db.count("Sales Invoice", filters={"docstatus": ["!=", 2]})
+		synced = frappe.db.sql(
+			"""
+			SELECT COUNT(*) FROM `tabSales Invoice`
+			WHERE docstatus != 2
+			  AND IFNULL(custom_quickbooks_invoice_id, '') != ''
+			""",
+			as_list=True,
+		)[0][0]
+		remaining = total - synced
+		if total == 0:
+			status = "No Data"
+		elif synced == total:
+			status = "All Synced"
+		elif synced > 0:
+			status = "Partially Synced"
+		else:
+			status = "Not Started"
+		last_sync_date = frappe.db.get_value(
+			"Sales Invoice",
+			{"docstatus": ["!=", 2], "custom_quickbooks_invoice_id": ["!=", ""]},
+			"modified",
+			order_by="modified desc",
+		)
+		return {"total": total, "synced": synced, "remaining": remaining, "status": status, "last_sync_date": last_sync_date}
+
+	def _get_purchase_invoice_statistics(self):
+		total = frappe.db.count("Purchase Invoice", filters={"docstatus": ["!=", 2]})
+		synced = frappe.db.sql(
+			"""
+			SELECT COUNT(*) FROM `tabPurchase Invoice`
+			WHERE docstatus != 2
+			  AND IFNULL(custom_quickbooks_bill_id, '') != ''
+			""",
+			as_list=True,
+		)[0][0]
+		remaining = total - synced
+		if total == 0:
+			status = "No Data"
+		elif synced == total:
+			status = "All Synced"
+		elif synced > 0:
+			status = "Partially Synced"
+		else:
+			status = "Not Started"
+		last_sync_date = frappe.db.get_value(
+			"Purchase Invoice",
+			{"docstatus": ["!=", 2], "custom_quickbooks_bill_id": ["!=", ""]},
 			"modified",
 			order_by="modified desc",
 		)
@@ -2468,6 +2482,42 @@ def refresh_all_counts(docname: str):
         "sales_orders_count": doc.sales_orders_count,
         "sales_invoices_count": doc.sales_invoices_count,
         "purchase_invoices_count": doc.purchase_invoices_count,
+        "item_total_count": doc.item_total_count,
+        "item_synced_count": doc.item_synced_count,
+        "item_remaining_count": doc.item_remaining_count,
+        "item_sync_status": doc.item_sync_status,
+        "item_last_sync_date": doc.item_last_sync_date,
+        "supplier_total_count": doc.supplier_total_count,
+        "supplier_synced_count": doc.supplier_synced_count,
+        "supplier_remaining_count": doc.supplier_remaining_count,
+        "supplier_sync_status": doc.supplier_sync_status,
+        "supplier_last_sync_date": doc.supplier_last_sync_date,
+        "customer_total_count": doc.customer_total_count,
+        "customer_synced_count": doc.customer_synced_count,
+        "customer_remaining_count": doc.customer_remaining_count,
+        "customer_disabled_count": doc.customer_disabled_count,
+        "customer_sync_status": doc.customer_sync_status,
+        "customer_last_sync_date": doc.customer_last_sync_date,
+        "stock_total_count": doc.stock_total_count,
+        "stock_synced_count": doc.stock_synced_count,
+        "stock_remaining_count": doc.stock_remaining_count,
+        "stock_sync_status": doc.stock_sync_status,
+        "stock_last_sync_date": doc.stock_last_sync_date,
+        "sales_order_total_count": doc.sales_order_total_count,
+        "sales_order_synced_count": doc.sales_order_synced_count,
+        "sales_order_remaining_count": doc.sales_order_remaining_count,
+        "sales_order_sync_status": doc.sales_order_sync_status,
+        "sales_order_last_sync_date": doc.sales_order_last_sync_date,
+        "sales_invoice_total_count": getattr(doc, "sales_invoice_total_count", 0),
+        "sales_invoice_synced_count": getattr(doc, "sales_invoice_synced_count", 0),
+        "sales_invoice_remaining_count": getattr(doc, "sales_invoice_remaining_count", 0),
+        "sales_invoice_sync_status": getattr(doc, "sales_invoice_sync_status", "Not Started"),
+        "sales_invoice_last_sync_date": getattr(doc, "sales_invoice_last_sync_date", None),
+        "purchase_invoice_total_count": getattr(doc, "purchase_invoice_total_count", 0),
+        "purchase_invoice_synced_count": getattr(doc, "purchase_invoice_synced_count", 0),
+        "purchase_invoice_remaining_count": getattr(doc, "purchase_invoice_remaining_count", 0),
+        "purchase_invoice_sync_status": getattr(doc, "purchase_invoice_sync_status", "Not Started"),
+        "purchase_invoice_last_sync_date": getattr(doc, "purchase_invoice_last_sync_date", None),
     }
 
 @frappe.whitelist()

@@ -531,6 +531,18 @@ function refresh_statistics(frm, show_alert = true) {
     });
 }
 
+const REFRESH_COUNT_FIELDS = [
+    "items_count", "suppliers_count", "customers_count", "item_images_count",
+    "sales_orders_count", "sales_invoices_count", "purchase_invoices_count",
+    "item_total_count", "item_synced_count", "item_remaining_count", "item_sync_status", "item_last_sync_date",
+    "supplier_total_count", "supplier_synced_count", "supplier_remaining_count", "supplier_sync_status", "supplier_last_sync_date",
+    "customer_total_count", "customer_synced_count", "customer_remaining_count", "customer_disabled_count", "customer_sync_status", "customer_last_sync_date",
+    "stock_total_count", "stock_synced_count", "stock_remaining_count", "stock_sync_status", "stock_last_sync_date",
+    "sales_order_total_count", "sales_order_synced_count", "sales_order_remaining_count", "sales_order_sync_status", "sales_order_last_sync_date",
+    "sales_invoice_total_count", "sales_invoice_synced_count", "sales_invoice_remaining_count", "sales_invoice_sync_status", "sales_invoice_last_sync_date",
+    "purchase_invoice_total_count", "purchase_invoice_synced_count", "purchase_invoice_remaining_count", "purchase_invoice_sync_status", "purchase_invoice_last_sync_date"
+];
+
 const refresh_all_counts = (frm) => {
     frappe.call({
         method: "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.refresh_all_counts",
@@ -538,7 +550,13 @@ const refresh_all_counts = (frm) => {
         freeze: false,
         callback: (r) => {
             if (r.message && r.message.success !== false) {
-                frm.reload_doc();
+                const msg = r.message;
+                REFRESH_COUNT_FIELDS.forEach((field) => {
+                    if (msg[field] !== undefined) {
+                        frm.doc[field] = msg[field];
+                    }
+                });
+                frm.refresh_fields(REFRESH_COUNT_FIELDS);
             }
         }
     });
