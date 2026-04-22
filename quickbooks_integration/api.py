@@ -131,524 +131,6 @@ def refresh_quickbooks_access_token():
         frappe.throw(_("Something went wrong while refreshing QuickBooks access token."))
 
 
-
-# @frappe.whitelist()
-# def fetch_quickbooks_customer_statement(**kwargs):
-#     """
-#     Fetch the Customer Balance Detail report from QuickBooks and return it in ERP-style format.
-#     """
-
-#     def normalize_key(raw_key, fallback):
-#         key = raw_key or fallback or ""
-#         return key.strip().lower().replace(" ", "_").replace("*", "")
-
-#     def get_column_keys(report_json):
-#         keys = []
-#         columns_data = report_json.get("Columns", {})
-
-#         # Handle different column structures
-#         if isinstance(columns_data, dict):
-#             columns = columns_data.get("Column", [])
-#             if not columns:
-#                 columns = columns_data.get("column", [])  # Try lowercase
-#         elif isinstance(columns_data, list):
-#             columns = columns_data
-#         else:
-#             columns = []
-
-#         if not columns:
-#             # Fallback: try to infer from header
-#             header = report_json.get("Header", {})
-#             if header:
-#                 # Use common column names for Customer Balance Detail report
-#                 keys = ["date", "transaction_type", "doc_num", "customer", "due_date", "amount", "balance"]
-
-#         for idx, column in enumerate(columns):
-#             if isinstance(column, dict):
-#                 meta = None
-#                 metadata = column.get("MetaData", [])
-#                 if metadata:
-#                     for md in metadata:
-#                         if isinstance(md, dict) and md.get("Name") == "ColKey":
-#                             meta = md.get("Value")
-#                             break
-
-#                 col_title = column.get("ColTitle") or column.get("col_title") or column.get("title") or ""
-#                 col_type = column.get("ColType") or column.get("col_type") or ""
-
-#                 # Normalize the key
-#                 normalized = normalize_key(meta, col_title or f"col_{idx}")
-
-#                 # Map common QuickBooks column titles to standard names
-#                 col_lower = col_title.lower()
-#                 if "date" in col_lower and "due" not in col_lower:
-#                     normalized = "date"
-#                 elif "due" in col_lower:
-#                     normalized = "due_date"
-#                 elif "type" in col_lower or "transaction" in col_lower:
-#                     normalized = "transaction_type"
-#                 elif "num" in col_lower or "doc" in col_lower or "ref" in col_lower:
-#                     normalized = "doc_num"
-#                 elif "amount" in col_lower and "balance" not in col_lower:
-#                     normalized = "amount"
-#                 elif "balance" in col_lower:
-#                     normalized = "balance"
-#                 elif "memo" in col_lower or "description" in col_lower:
-#                     normalized = "memo"
-
-#                 keys.append(normalized)
-#             else:
-#                 keys.append(f"col_{idx}")
-
-#         return keys if keys else [f"col_{i}" for i in range(10)]  # Default fallback
-
-#     def coldata_to_dict(coldata, keys):
-#         record = {}
-#         if not coldata:
-#             return record
-
-#         for idx, col in enumerate(coldata):
-#             if not isinstance(col, dict):
-#                 continue
-
-#             key = keys[idx] if idx < len(keys) else f"col_{idx}"
-
-#             # Extract value - handle different formats
-#             value = col.get("value")
-#             if value is None:
-#                 value = col.get("Value")  # Try capitalized
-#             if value is None:
-#                 value = col.get("text") or col.get("Text")
-
-#             if value not in (None, ""):
-#                 # Clean up value - remove currency symbols and whitespace
-#                 if isinstance(value, str):
-#                     value = value.strip()
-#                 record[key] = value
-
-#             # Extract ID if present (this is crucial for transaction type detection)
-#             col_id = col.get("id") or col.get("Id") or col.get("ID")
-#             if col_id:
-#                 record[f"{key}_id"] = col_id
-#                 # Also store as generic id for transaction identification
-#                 if idx == 0:  # Usually first column has transaction ID
-#                     record["transaction_id"] = col_id
-
-#             # Extract href if present (contains transaction type info)
-#             href = col.get("href") or col.get("Href")
-#             if href:
-#                 record[f"{key}_href"] = href
-#                 # Extract transaction type from href if available
-#                 if "invoice" in href.lower() and "transaction_type" not in record:
-#                     record["transaction_type"] = "invoice"
-#                 elif "creditmemo" in href.lower() or "credit" in href.lower():
-#                     record["transaction_type"] = "creditmemo"
-#                 elif "payment" in href.lower():
-#                     record["transaction_type"] = "payment"
-
-#         return record
-
-#     def flatten_rows(row_items, keys, bucket, summary_bucket):
-#         if not row_items:
-#             return
-
-#         # Handle both list and single row
-#         if not isinstance(row_items, list):
-#             row_items = [row_items]
-
-#         for row in row_items:
-#             if not isinstance(row, dict):
-#                 continue
-
-#             # Handle both lowercase and capitalized type values
-#             row_type = (row.get("type") or "").lower()
-#             col_data = row.get("ColData", [])
-
-#             # Process data rows (actual transactions)
-#             if row_type == "data":
-#                 record = coldata_to_dict(col_data, keys)
-#                 if record:  # Only add if we have data
-#                     bucket.append(record)
-#             # Process summary rows (totals, opening balance, etc.)
-#             elif row_type == "summary":
-#                 record = coldata_to_dict(col_data, keys)
-#                 if record:  # Only add if we have data
-#                     summary_bucket.append(record)
-#             # If type is not specified but has ColData, treat as data row
-#             elif col_data and not row_type:
-#                 record = coldata_to_dict(col_data, keys)
-#                 if record:
-#                     bucket.append(record)
-
-#             # Recursively process nested rows
-#             nested_rows = None
-#             if row.get("Rows"):
-#                 nested_data = row["Rows"]
-#                 if isinstance(nested_data, dict):
-#                     nested_rows = nested_data.get("Row", [])
-#                 elif isinstance(nested_data, list):
-#                     nested_rows = nested_data
-#             elif row.get("Row"):
-#                 nested_rows = row.get("Row")
-
-#             if nested_rows:
-#                 flatten_rows(nested_rows, keys, bucket, summary_bucket)
-
-#     def resolve_erp_customer(identifier):
-#         if not identifier:
-#             return None
-
-#         filters = {"custom_quickbooks_customer_id": identifier}
-#         doc = frappe.db.get_value("Customer", filters, ["name", "customer_name", "custom_quickbooks_customer_id"], as_dict=True)
-#         if doc:
-#             return doc
-
-#         if frappe.db.exists("Customer", identifier):
-#             return frappe.db.get_value("Customer", identifier, ["name", "customer_name", "custom_quickbooks_customer_id"], as_dict=True)
-
-#         return None
-
-#     def get_contact_details(erp_customer):
-#         if not erp_customer:
-#             return {"contact_name": None, "phone": None, "email": None, "address": None}
-
-#         contact_name = None
-#         phone = None
-#         email = None
-#         address_text = None
-
-#         primary_contact = frappe.db.get_value(
-#             "Dynamic Link",
-#             {
-#                 "link_doctype": "Customer",
-#                 "link_name": erp_customer.name,
-#                 "parenttype": "Contact",
-#             },
-#             "parent",
-#         )
-
-#         if primary_contact:
-#             contact_doc = frappe.get_doc("Contact", primary_contact)
-#             contact_name = contact_doc.first_name or contact_doc.name
-#             phone = contact_doc.mobile_no or contact_doc.phone
-#             email = contact_doc.email_id
-
-#         address_link = frappe.db.get_value(
-#             "Dynamic Link",
-#             {
-#                 "link_doctype": "Customer",
-#                 "link_name": erp_customer.name,
-#                 "parenttype": "Address",
-#             },
-#             "parent",
-#         )
-
-#         if address_link:
-#             address_doc = frappe.get_doc("Address", address_link)
-#             address_text = ", ".join(filter(None, [address_doc.address_line1, address_doc.city, address_doc.country]))
-
-#         return {
-#             "contact_name": contact_name,
-#             "phone": phone,
-#             "email": email,
-#             "address": address_text,
-#         }
-
-#     def build_erp_response(report_json, customer_info, contact_info, start_date, end_date):
-#         column_keys = get_column_keys(report_json)
-#         transactions, summaries = [], []
-
-#         # Handle different Rows structures from QuickBooks API
-#         rows_data = report_json.get("Rows", {})
-#         if not rows_data:
-#             rows_data = report_json.get("rows", {})  # Try lowercase
-
-#         # Extract Row array from Rows container
-#         row_items = None
-#         if isinstance(rows_data, dict):
-#             row_items = rows_data.get("Row", [])
-#             if not row_items:
-#                 row_items = rows_data.get("row", [])  # Try lowercase
-#         elif isinstance(rows_data, list):
-#             row_items = rows_data
-
-#         if not row_items:
-#             # If no rows found, log for debugging
-#             frappe.logger().debug(f"[QuickBooks] No rows found in report. Structure: {list(report_json.keys())}")
-
-#         flatten_rows(row_items or [], column_keys, transactions, summaries)
-
-#         # Debug logging (can be removed in production if needed)
-#         frappe.logger().debug(f"[QuickBooks] Parsed {len(transactions)} transactions, {len(summaries)} summaries")
-#         if transactions:
-#             frappe.logger().debug(f"[QuickBooks] Sample transaction keys: {list(transactions[0].keys())}")
-
-#         currency = report_json.get("Header", {}).get("Currency") or "AUD"
-
-#         def pick(record, *keys):
-#             for key in keys:
-#                 if key in record and record[key] not in (None, ""):
-#                     return record[key]
-#             return ""
-
-#         invoices, credit_notes, payments = [], [], []
-#         opening_balance = 0.0
-
-#         # Process summary rows first to get opening balance
-#         for summary in summaries:
-#             summary_type = (pick(summary, "col_0", "col_1") or "").lower()
-#             balance_value = flt(pick(summary, "balance", "open_balance", "amount", "col_2", "col_3", "col_4"))
-
-#             # Look for opening balance in summary rows
-#             if "opening" in summary_type or "beginning" in summary_type:
-#                 opening_balance = balance_value
-#             elif "total" in summary_type and balance_value and opening_balance == 0:
-#                 # Sometimes opening balance is in a total row
-#                 opening_balance = balance_value
-
-#         # Process transactions
-#         for txn in transactions:
-#             # Try multiple field name variations for transaction type
-#             # First check if we extracted it from href
-#             txn_type_raw = pick(txn, "transaction_type", "txn_type", "type", "col_0", "col_1") or ""
-#             txn_type = str(txn_type_raw).lower().strip()
-
-#             # Try multiple field name variations for document number
-#             doc_num = pick(txn, "doc_num", "docnum", "txn_id", "num", "transaction_id", "col_1", "col_2", "col_0")
-
-#             # Try multiple field name variations for dates
-#             tx_date = pick(txn, "tx_date", "date", "transaction_date", "col_0", "col_1")
-#             due_date = pick(txn, "due_date", "due", "col_2", "col_3")
-
-#             memo = pick(txn, "memo", "cust_msg", "description", "col_4", "col_5")
-
-#             # Try multiple field name variations for amounts
-#             # In Customer Balance Detail report, amounts are typically in later columns
-#             amount = flt(pick(txn, "subt_amount", "amount", "total_amount", "col_3", "col_4", "col_5", "col_6"))
-#             balance = flt(pick(txn, "balance", "open_balance", "amount_due", "outstanding_amount", "col_4", "col_5", "col_6", "col_7"))
-
-#             # If amount is 0 but balance has value, use balance
-#             if amount == 0 and balance != 0:
-#                 amount = abs(balance)
-
-#             # Skip if no meaningful data (but be more lenient - if we have a date or doc_num, include it)
-#             if not doc_num and amount == 0 and balance == 0 and not tx_date:
-#                 continue
-
-#             # Determine transaction type more reliably
-#             # Check href first (most reliable)
-#             for key in txn.keys():
-#                 if "href" in key.lower() and txn[key]:
-#                     href = str(txn[key]).lower()
-#                     if "invoice" in href and not txn_type:
-#                         txn_type = "invoice"
-#                     elif ("creditmemo" in href or "credit" in href) and not txn_type:
-#                         txn_type = "creditmemo"
-#                     elif "payment" in href and not txn_type:
-#                         txn_type = "payment"
-#                     break
-
-#             # If still no type, try to infer from document number or transaction type field
-#             if not txn_type or txn_type == "":
-#                 # Check transaction type column values
-#                 type_value = str(pick(txn, "col_0", "col_1", "col_2") or "").lower()
-#                 if "invoice" in type_value or "inv" in type_value:
-#                     txn_type = "invoice"
-#                 elif "credit" in type_value or "memo" in type_value:
-#                     txn_type = "creditmemo"
-#                 elif "payment" in type_value or "pay" in type_value:
-#                     txn_type = "payment"
-#                 # Try to infer from document number
-#                 elif doc_num:
-#                     doc_str = str(doc_num).lower()
-#                     if "invoice" in doc_str or "inv" in doc_str or "si-" in doc_str:
-#                         txn_type = "invoice"
-#                     elif "credit" in doc_str or "cn-" in doc_str or "cm-" in doc_str:
-#                         txn_type = "creditmemo"
-#                     elif "payment" in doc_str or "pay-" in doc_str or "pmt" in doc_str:
-#                         txn_type = "payment"
-
-#             # If we still can't determine type, check amount sign
-#             # Invoices are typically positive, payments negative, credit memos can be either
-#             if not txn_type or txn_type == "":
-#                 if amount < 0:
-#                     txn_type = "payment"
-#                 elif amount > 0:
-#                     # Default to invoice if positive (most common)
-#                     txn_type = "invoice"
-
-#             # Categorize transactions
-#             if txn_type in ("invoice", "salesreceipt", "sales_receipt", "inv", "sales invoice"):
-#                 outstanding = abs(balance) if balance != 0 else abs(amount)
-#                 invoices.append({
-#                     "invoice_id": doc_num or "",
-#                     "posting_date": tx_date or "",
-#                     "due_date": due_date or "",
-#                     "grand_total": abs(amount) if amount != 0 else abs(outstanding),
-#                     "outstanding_amount": outstanding,
-#                     "status": "Paid" if outstanding == 0 else "Unpaid",
-#                     "currency": currency,
-#                     "payment_status": "Paid" if outstanding == 0 else "Unpaid",
-#                 })
-#             elif txn_type in ("creditmemo", "credit_memo", "credit", "credit memo", "cm"):
-#                 remaining_credit = abs(balance) if balance != 0 else abs(amount)
-#                 credit_notes.append({
-#                     "credit_note_no": doc_num or "",
-#                     "posting_date": tx_date or "",
-#                     "status": "Closed" if remaining_credit == 0 else "Open",
-#                     "total": abs(amount) if amount != 0 else abs(remaining_credit),
-#                     "remaining_credit": remaining_credit,
-#                     "currency": currency,
-#                 })
-#             elif txn_type in ("payment", "receivepayment", "sales_payment", "payment received", "pmt"):
-#                 # Payments are typically negative in QuickBooks
-#                 paid_amount = abs(amount) if amount != 0 else abs(balance)
-#                 payments.append({
-#                     "payment_id": doc_num or "",
-#                     "posting_date": tx_date or "",
-#                     "paid_amount": paid_amount,
-#                     "received_amount": paid_amount,
-#                     "payment_type": "Receive",
-#                     "mode_of_payment": pick(txn, "ship_via", "payment_method"),
-#                     "reference_no": memo,
-#                 })
-#             else:
-#                 # If we can't categorize, log it but don't skip (might be a new transaction type)
-#                 frappe.logger().debug(f"[QuickBooks] Unrecognized transaction type: {txn_type}, doc_num: {doc_num}, amount: {amount}")
-#                 # Default to invoice for unknown types with positive amounts
-#                 if amount > 0:
-#                     outstanding = abs(balance) if balance != 0 else abs(amount)
-#                     invoices.append({
-#                         "invoice_id": doc_num or "",
-#                         "posting_date": tx_date or "",
-#                         "due_date": due_date or "",
-#                         "grand_total": abs(amount) if amount != 0 else abs(outstanding),
-#                         "outstanding_amount": outstanding,
-#                         "status": "Paid" if outstanding == 0 else "Unpaid",
-#                         "currency": currency,
-#                         "payment_status": "Paid" if outstanding == 0 else "Unpaid",
-#                     })
-
-#         # Calculate totals
-#         total_invoices = sum(flt(inv["grand_total"]) for inv in invoices)
-#         total_credit_notes = sum(flt(note["total"]) for note in credit_notes)
-#         total_payments = sum(flt(pay["paid_amount"]) for pay in payments)
-
-#         # Debug logging
-#         frappe.logger().debug(
-#             f"[QuickBooks] Categorized: {len(invoices)} invoices, {len(credit_notes)} credit notes, "
-#             f"{len(payments)} payments from {len(transactions)} total transactions"
-#         )
-
-#         # Calculate closing balance: opening + invoices - credit notes - payments
-#         closing_balance = opening_balance + total_invoices - total_credit_notes - total_payments
-
-#         return {
-#             "status": "success",
-#             "customer": (customer_info.name if customer_info else None),
-#             "customer_name": (customer_info.customer_name if customer_info else report_json.get("Header", {}).get("Customer")),
-#             "company": frappe.defaults.get_global_default("company"),
-#             "from_date": start_date,
-#             "to_date": end_date,
-#             "contact_details": contact_info,
-#             "invoices": invoices,
-#             "credit_notes": credit_notes,
-#             "payments": payments,
-#             "summary": {
-#                 "currency": currency,
-#                 "opening_balance": opening_balance,
-#                 "total_invoices": total_invoices,
-#                 "total_payments": total_payments * -1,
-#                 "credit_notes": total_credit_notes * -1,
-#                 "closing_balance": closing_balance,
-#             },
-#         }
-
-#     try:
-#         refresh_quickbooks_access_token()
-#     except Exception:
-#         frappe.logger().warning("[QuickBooks] Unable to refresh access token, attempting with existing token.")
-
-#     settings = frappe.get_single("QuickBooks Settings")
-
-#     if not settings.enable:
-#         frappe.throw(_("QuickBooks integration is disabled. Please enable it in QuickBooks Settings."))
-
-#     access_token = settings.access_token
-#     realm_id = settings.quickbooks_company_id
-#     base_url = (settings.base_url or "").strip().rstrip("/")
-
-#     if not access_token or not realm_id or not base_url:
-#         frappe.throw(_("QuickBooks settings are incomplete. Please provide access token, company ID, and base URL."))
-
-#     if not base_url.startswith("http"):
-#         base_url = f"https://{base_url}"
-
-#     allowed_params = [
-#         "customer",
-#         "shipvia",
-#         "term",
-#         "end_duedate",
-#         "start_duedate",
-#         "custom1",
-#         "sort_by",
-#         "arpaid",
-#         "report_date",
-#         "sort_order",
-#         "aging_method",
-#         "department",
-#         "columns",
-#     ]
-
-#     request_params = {}
-#     form_dict = frappe._dict(frappe.form_dict or {})
-
-#     for param in allowed_params:
-#         value = kwargs.get(param, form_dict.get(param))
-#         if value in (None, "", []):
-#             continue
-#         request_params[param] = value
-
-#     request_params["minorversion"] = settings.minor_version or "75"
-
-#     customer_identifier = request_params.get("customer") or ""
-#     start_date = request_params.get("start_duedate")
-#     end_date = request_params.get("end_duedate")
-
-#     if not customer_identifier:
-#         frappe.throw(_("Customer parameter is required to fetch the statement."))
-
-#     erp_customer = resolve_erp_customer(customer_identifier)
-#     contact_details = get_contact_details(erp_customer)
-
-#     query_string = urlencode(request_params, doseq=True)
-#     endpoint = f"{base_url}/v3/company/{realm_id}/reports/CustomerBalanceDetail"
-#     url = f"{endpoint}?{query_string}" if query_string else endpoint
-
-#     headers = {
-#         "Authorization": f"Bearer {access_token}",
-#         "Accept": "application/json",
-#         "Content-Type": "application/json"
-#     }
-
-#     try:
-#         response = requests.get(url, headers=headers, timeout=30)
-#         response.raise_for_status()
-#         report_json = response.json()
-#         return build_erp_response(report_json, erp_customer, contact_details, start_date, end_date)
-#     except requests.RequestException as exc:
-#         frappe.log_error(
-#             message=f"{frappe.get_traceback()}\nURL: {url}\nDetails: {str(exc)}",
-#             title="QuickBooks Customer Statement Fetch Failed"
-#         )
-#         frappe.throw(_("Unable to fetch customer statement from QuickBooks. Please try again later."))
-#     except ValueError:
-#         frappe.log_error(
-#             message=f"{frappe.get_traceback()}\nURL: {url}\nDetails: Non-JSON response",
-#             title="QuickBooks Customer Statement Invalid Response"
-#         )
-#         frappe.throw(_("QuickBooks returned an invalid response for the customer statement request."))
-
 @frappe.whitelist()
 def fetch_quickbooks_customer_statement(**kwargs):
     """
@@ -1055,29 +537,36 @@ def cancel_quickbooks_purchase_order(purchase_order_id):
     return _("Purchase Order {0} has been successfully cancelled in QuickBooks.").format(purchase_order_id)
 
 
+
 @frappe.whitelist(allow_guest=True)
 def sync_single_sales_invoice(docname):
-    """Sync a single Sales Invoice to QuickBooks with global invoice-level discount"""
-    import requests
-    import json
-    from frappe.utils import flt
+    """Sync a single Sales Invoice to QuickBooks with global invoice-level discount %"""
+    import requests, json
 
     try:
-        doc = frappe.get_doc("Sales Invoice", docname)
 
-        # Validation checks
+
+
+        doc = frappe.get_doc("Sales Invoice", docname)
         if doc.docstatus == 2:
             frappe.msgprint("Cancelled Invoices are not allowed to sync")
+            frappe.log_error(
+                title="QBO Sync Blocked - Cancelled Invoice",
+                message=f"Sales Invoice {docname} is cancelled (docstatus=2)"
+            )
             return {"error": "Cancelled invoice cannot be synced."}
 
         refresh_quickbooks_access_token()
         settings = frappe.get_doc("QuickBooks Settings")
-
         if not settings.enable:
             frappe.msgprint("Please Enable QuickBooks Settings")
+            frappe.log_error(
+                title="QBO Sync Blocked - Settings Disabled",
+                message=f"QuickBooks Settings is disabled for Sales Invoice: {docname}"
+            )
             return {"error": "QuickBooks not enabled."}
 
-        # QuickBooks endpoint
+        # ---- QuickBooks endpoint ----
         url = f"{settings.base_url.strip().rstrip('/')}/v3/company/{settings.quickbooks_company_id}/invoice?minorversion={settings.minor_version or '75'}"
         headers = {
             "Authorization": f"Bearer {settings.access_token}",
@@ -1085,58 +574,83 @@ def sync_single_sales_invoice(docname):
             "Accept": "application/json"
         }
 
-        # Customer
+
+
+        # ---- Customer ----
         customer = frappe.get_doc("Customer", doc.customer)
         qb_customer_id = customer.get("custom_quickbooks_customer_id") or "1"
         send_item = (settings.send_item) == 1
 
-        # Helper: get tax code from Item master
-        def get_tax_code(item_code):
-            """Fetch tax code from Item master's tax template"""
+
+
+        # ---- Helper: get tax code ----
+        def get_tax_code(item):
+            tax_template = item.item_tax_template
+            # if not tax_template:
+            #     # Try to fetch from Item master
+            #     tax_template = frappe.db.get_value("Item", item.item_code, "item_tax_template")
+
+            if not tax_template:
+
+                return "4"
+
             try:
-                # Get item_tax_template from Item master (not from Sales Invoice Item)
-                tax_template = frappe.db.get_value("Item", item_code, "item_tax_template")
+                tax_code = frappe.get_doc("Item Tax Template", tax_template).custom_quickbooks_gst_id
 
-                if not tax_template:
-                    return "5"  # Default GST code
-
-                # Get QuickBooks GST ID from the tax template
-                tax_code = frappe.db.get_value(
-                    "Item Tax Template",
-                    tax_template,
-                    "custom_quickbooks_gst_id"
-                ) or "5"
+                if not tax_code:
+                    error_msg = f"Tax template '{tax_template}' for item {item.item_code} has no QuickBooks GST ID mapped"
+                    frappe.log_error(
+                        title="QBO Sync - Missing QuickBooks GST ID",
+                        message=error_msg
+                    )
+                    frappe.throw(error_msg)
 
                 return tax_code
-            except Exception:
-                return "5"  # Default GST code on any error
 
-        # Prepare line items
+            except Exception as e:
+                frappe.log_error(
+                    title="QBO Sync - Tax Code Fetch Error",
+                    message=f"Error fetching tax code for item {item.item_code} in Sales Invoice {docname}: {str(e)}"
+                )
+               
+
+
+                # ---- Prepare line items ----
         line_items = []
         subtotal = 0.0
-        tax_code_weights = {}  # Track amount per tax code
+        tax_code_weights = {}  # Track amount per tax code to find dominant one
 
-        for item in doc.items:
-            amount = flt(item.amount)
+
+
+        for idx, item in enumerate(doc.items, 1):
+            amount = float(item.amount or 0)
             subtotal += amount
 
-            # Get tax code from Item master using item_code
-            item_tax_code = get_tax_code(item.item_code)
+            # Retrieve tax code once
+            item_tax_code = get_tax_code(item)
 
             # Track weight (accumulate amount per tax code)
             tax_code_weights[item_tax_code] = tax_code_weights.get(item_tax_code, 0.0) + amount
 
             detail = {
                 "Qty": item.qty,
-                "UnitPrice": flt(item.rate),
+                "UnitPrice": float(item.rate or 0),
                 "TaxCodeRef": {"value": item_tax_code}
             }
 
-            # Add ItemRef if sending items to QB
             if send_item:
                 qb_item_id = frappe.db.get_value("Item", item.item_code, "custom_quickbooks_item_id")
                 if qb_item_id:
                     detail["ItemRef"] = {"value": qb_item_id, "name": item.item_name}
+                    frappe.log_error(
+                        title=f"QBO Sync - Line Item {idx} with QBO Item",
+                        message=f"Sales Invoice: {docname}\nItem: {item.item_code}\nQB Item ID: {qb_item_id}\nQty: {item.qty}\nRate: {item.rate}\nAmount: {amount}"
+                    )
+                else:
+                    frappe.log_error(
+                        title=f"QBO Sync - Line Item {idx} without QBO Item",
+                        message=f"Sales Invoice: {docname}\nItem: {item.item_code}\nNo QB Item ID found\nQty: {item.qty}\nRate: {item.rate}\nAmount: {amount}"
+                    )
 
             line_items.append({
                 "DetailType": "SalesItemLineDetail",
@@ -1145,44 +659,116 @@ def sync_single_sales_invoice(docname):
                 "SalesItemLineDetail": detail
             })
 
-        # Handle global invoice-level discount
+        frappe.log_error(
+            title="QBO Sync - Line Items Summary",
+            message=f"Sales Invoice: {docname}\nTotal Line Items: {len(line_items)}\nSubtotal: {subtotal}"
+        )
+
+        # ---- Global invoice-level discount ----
+        # In ERPNext, discount_amount is the value of the discount.
+        # additional_discount_percentage is the % value.
         discount_amount = flt(doc.get("discount_amount"))
         additional_discount_percentage = flt(doc.get("additional_discount_percentage"))
 
-        # Calculate discount if percentage exists but amount is zero
-        if additional_discount_percentage > 0 and discount_amount == 0:
-            discount_amount = round(subtotal * (additional_discount_percentage / 100.0), 2)
+        frappe.log_error(
+            title="QBO DEBUG - Raw Discount Values",
+            message=f"Doc: {docname}\ndiscount_amount: {discount_amount}\nadditional_discount_percentage: {additional_discount_percentage}\nsubtotal: {subtotal}"
+        )
 
-        # Determine discount tax code (dominant tax code from line items)
-        discount_tax_code = "5"  # Default
-        if tax_code_weights:
-            discount_tax_code = max(tax_code_weights, key=tax_code_weights.get)
+        # Force calculation if percentage exists, to ensure we have a value
+        if additional_discount_percentage > 0:
+            calculated_discount = round(subtotal * (additional_discount_percentage / 100.0), 2)
+            # Use calculated if doc.discount_amount is 0 or vastly different?
+            # Let's prefer the calculated one if discount_amount is 0
+            if discount_amount == 0:
+                discount_amount = calculated_discount
+                frappe.log_error(title="QBO DEBUG - Using Calculated Discount", message=f"Calculated: {discount_amount}")
 
-        # Add discount line if applicable
-        apply_discount_on = doc.get("apply_discount_on") or "Grand Total"
-        apply_tax_after_discount = True  # Default for "Net Total"
+        frappe.log_error(
+            title="QBO DEBUG - Final Discount to Send",
+            message=f"Discount Amount: {discount_amount}"
+        )
 
         if discount_amount > 0:
-            if apply_discount_on == "Grand Total":
-                # Discount after tax - use non-taxable code
-                apply_tax_after_discount = False
-                discount_tax_code = "4"  # Non-taxable
+            # STRATEGY: Send fixed amount (no percentage)
 
+            # Determine dominant tax code (Tax code with highest total amount)
+            # Default to "5" (GST) if no items or something fails
+            discount_tax_code = "5"
+            if tax_code_weights:
+                try:
+                    # Find key with max value
+                    discount_tax_code = max(tax_code_weights, key=tax_code_weights.get)
+                    frappe.log_error(title="QBO DEBUG - Dominant Tax Code Found", message=f"Selected Tax Code: {discount_tax_code} based on weights: {json.dumps(tax_code_weights)}")
+                except Exception as e:
+                    frappe.log_error(title="QBO DEBUG - Tax Code Selection Error", message=str(e))
+                    # Fallback to first item logic if weight calculation fails (shouldn't happen)
+                    if len(line_items) > 0 and "SalesItemLineDetail" in line_items[0]:
+                        try:
+                            discount_tax_code = line_items[0]["SalesItemLineDetail"]["TaxCodeRef"]["value"]
+                        except:
+                            pass
+
+            frappe.log_error(
+                title="QBO DEBUG - Discount Tax Code",
+                message=f"Using Tax Code: {discount_tax_code}"
+            )
+
+            # Strictly match the manual working payload
+            # Removed DiscountAccountRef as it was not in the working manual payload
             discount_line = {
-                "DetailType": "DiscountLineDetail",
-                "Amount": discount_amount,
-                "DiscountLineDetail": {
-                    "PercentBased": False,
-                    "TaxCodeRef": {"value": discount_tax_code}
-                }
+               "DetailType": "DiscountLineDetail",
+               "Amount": discount_amount,
+               "DiscountLineDetail": {
+                   "PercentBased": False,
+                   "TaxCodeRef": {"value": discount_tax_code}
+               }
             }
+
             line_items.append(discount_line)
 
-        # Build payload
+            frappe.log_error(
+                title="QBO DEBUG - Discount Payload",
+                message=f"Payload Line:\n{json.dumps(discount_line, indent=2)}"
+            )
+        else:
+            frappe.log_error(
+                title="QBO Sync - No Discount",
+                message=f"Sales Invoice: {docname}\nNo additional discount percentage found"
+            )
+
+        # ---- Build payload ----
+        apply_discount_on = doc.get("apply_discount_on") or "Grand Total" # Default to Grand Total if not set
+
+        # Determine QBO behavior based on ERPNext discount setting
+        if apply_discount_on == "Net Total":
+            # Discount applied BEFORE tax
+            apply_tax_after_discount = True
+            # Discount line needs a TAXABLE code so it reduces the tax basis
+            # We already calculated 'discount_tax_code' (dominant tax code) above for this purpose
+        else:
+            # "Grand Total" -> Discount applied AFTER tax
+            apply_tax_after_discount = False
+            # Discount line needs a NON-TAXABLE code so it doesn't reduce the calculated tax
+            # We force it to "Non-Taxable" (usually ID "4" or "NON" in standard QBO AU/Global)
+            # You might need to adjust "4" if your specific QBO Non-Taxable code is different.
+            # Assuming '4' based on your earlier payload which had "TaxCodeRef": {"value": "4"} for a line item.
+            discount_tax_code = "4" # Or "NON" or whatever is "Tax Free" in your system
+
+            frappe.log_error(
+                title="QBO Sync - Discount Logic",
+                message=f"Apply Discount On: {apply_discount_on} -> Setting ApplyTaxAfterDiscount=False, TaxCode=Non-Taxable({discount_tax_code})"
+            )
+
+            # Update the discount line we appended earlier if we need to change the tax code
+            if len(line_items) > 0 and line_items[-1].get("DetailType") == "DiscountLineDetail":
+                 line_items[-1]["DiscountLineDetail"]["TaxCodeRef"]["value"] = discount_tax_code
+
+
         payload = {
             "DocNumber": doc.name,
             "TxnDate": str(doc.posting_date),
-            "DueDate": str(doc.due_date or doc.posting_date),
+            "DueDate": str(doc.due_date or doc.posting_date), # Use due_date, fallback to posting_date
             "CustomerRef": {"value": qb_customer_id, "name": doc.customer},
             "Line": line_items,
             "ApplyTaxAfterDiscount": apply_tax_after_discount,
@@ -1191,60 +777,74 @@ def sync_single_sales_invoice(docname):
             "EmailStatus": "NotSet"
         }
 
-        # # LOG 1: Sync initiated with payload
-        # frappe.log_error(
-        #     title=f"QBO Sync Initiated - {docname}",
-        #     message=f"PAYLOAD:\n{json.dumps(payload, indent=2, default=str)}"
-        # )
+        # Remove GlobalTaxCalculation to let QBO use defaults/customer settings
+        # This matches the working manual payload
 
-        # Send request
-        res = requests.post(url, headers=headers, data=json.dumps(payload))
-        body = res.json() if res.text else {}
-
-        # LOG 2: Sync completed with response
         frappe.log_error(
-            title=f"QBO Sync Completed - {docname}",
-            message=f"STATUS: {res.status_code}\n\nRESPONSE:\n{json.dumps(body, indent=2, default=str)}"
+            title="QBO Sync - Final Payload",
+            message=f"Sales Invoice: {docname}\nPayload:\n{json.dumps(payload, indent=2)}"
         )
 
-        # Handle response
+        # ---- Send request ----
+        frappe.log_error(
+            title="QBO Sync - Sending Request",
+            message=f"Sales Invoice: {docname}\nSending POST request to QuickBooks..."
+        )
+
+        res = requests.post(url, headers=headers, data=json.dumps(payload))
+
+        # ---- Log full request + response for debugging ----
+
+
+        frappe.log_error(
+            title="QBO Sync - Response Received",
+            message=f"Sales Invoice: {docname}\nStatus Code: {res.status_code}\nResponse Headers: {dict(res.headers)}\nResponse Text (first 2000 chars): {res.text[:2000]}"
+        )
+
+        body = res.json() if res.text else {}
+
         if res.status_code in (200, 201):
             if body.get("Invoice"):
                 qbo_id = body["Invoice"]["Id"]
 
-                # Update only fields that exist
+                # Log the discount details from QB response
+                qb_lines = body["Invoice"].get("Line", [])
+                discount_lines = [l for l in qb_lines if l.get("DetailType") == "DiscountLineDetail"]
+
+
+
                 doc.db_set("custom_quickbooks_invoice_id", qbo_id)
                 doc.db_set("status", "Confirmed")
-                # Removed: doc.db_set("is_synced", 1)
+                # doc.db_set("is_synced", 1)
                 frappe.db.commit()
+
+                frappe.log_error(
+                    title="QBO Sync - SUCCESS",
+                    message=f"Sales Invoice: {docname}\nQBO Invoice ID: {qbo_id}\nFull Response: {json.dumps(body, indent=2)}"
+                )
 
                 frappe.msgprint(f"Successfully synced to QuickBooks! QBO Invoice ID: {qbo_id}")
                 return {"id": qbo_id, "response": body}
             else:
+
                 return {"error": "Unexpected response format", "response": body}
         else:
-            # Extract error messages
+            # Extract detailed error information
             fault = body.get("Fault", {})
             errors = fault.get("Error", [])
-            error_messages = [
-                f"Code: {error.get('code')}, Message: {error.get('Message')}, Detail: {error.get('Detail')}"
-                for error in errors
-            ]
+            error_messages = []
+
+            for error in errors:
+                error_messages.append(f"Code: {error.get('code')}, Message: {error.get('Message')}, Detail: {error.get('Detail')}")
+
 
             error_msg = error_messages[0] if error_messages else "Unknown error"
             frappe.msgprint(f"QuickBooks sync failed: {error_msg}")
-            return {
-                "error": f"Sync failed ({res.status_code})",
-                "details": error_messages,
-                "response": body
-            }
+            return {"error": f"Sync failed ({res.status_code})", "details": error_messages, "response": body}
 
     except Exception as e:
         import traceback
-        frappe.log_error(
-            title=f"QBO Sync Exception - {docname}",
-            message=f"ERROR: {str(e)}\n\nTRACEBACK:\n{traceback.format_exc()}"
-        )
+
         frappe.msgprint(f"Error during sync: {str(e)}")
         return {"error": str(e), "traceback": traceback.format_exc()}
 
@@ -1348,6 +948,9 @@ def sync_credit_memo_to_quickbooks(docname=None):
 
 @frappe.whitelist(allow_guest=True)
 def sync_credit_memo(invoice):
+    import json
+    import requests
+
     # Refresh access token if needed
     refresh_quickbooks_access_token()
 
@@ -1359,21 +962,32 @@ def sync_credit_memo(invoice):
         "Accept": "application/json"
     }
 
+    
+   
+
     def get_tax_code(item):
-        if item.item_tax_template:
-            return frappe.db.get_value(
-                "Item Tax Template",
-                item.item_tax_template,
-                "custom_quickbooks_gst_id"
-            ) or "5"
-        return "5"
+
+        try:
+            tax_template = item.item_tax_template
+
+            if not tax_template:
+                
+                return "4"  
+
+            tax_template_doc = frappe.get_doc("Item Tax Template", tax_template)
+
+            tax_code = tax_template_doc.custom_quickbooks_gst_id
+
+            return tax_code
+
+        except Exception as e:
+            
+            frappe.log_error(str(e), "QuickBooks Tax Code Fetch Error")
+
+
 
     line_items = []
     for item in invoice.items:
-        item_ref = frappe.db.get_value("Item", item.item_code, "custom_quickbooks_item_id")
-        if not item_ref:
-            frappe.throw(f"QuickBooks Item ID is missing for Item {item.item_code} in Credit Memo {invoice.name}")
-
         line_items.append({
             "DetailType": "SalesItemLineDetail",
             "Amount": abs(item.qty * item.rate),
@@ -1381,7 +995,6 @@ def sync_credit_memo(invoice):
             "SalesItemLineDetail": {
                 "Qty": abs(item.qty),
                 "UnitPrice": abs(item.rate),
-                "ItemRef": {"value": "1862", "name" : "Credit"},
                 "TaxCodeRef": {"value": get_tax_code(item)}
             }
         })
@@ -1395,32 +1008,39 @@ def sync_credit_memo(invoice):
         frappe.throw(f"QuickBooks Customer ID is missing for Customer {invoice.customer}")
 
     payload = {
-        # "DocNumber": invoice.name,
+        "DocNumber": invoice.name,
         "TxnDate": invoice.posting_date.strftime("%Y-%m-%d") if invoice.posting_date else frappe.utils.nowdate(),
         "CustomerRef": {"value": qb_customer_id},
         "Line": line_items,
         "CustomerMemo": {"value": "Credit Memo from ERPNext"}
     }
 
+    # LOG 1: Sync initiated with payload
+    frappe.log_error(
+        title=f"QBO Credit Memo Initiated - {invoice.name}",
+        message=f"PAYLOAD:\n{json.dumps(payload, indent=2, default=str)}"
+    )
+
     try:
         res = requests.post(url, headers=headers, json=payload)
 
+        # LOG 2: Sync completed with response
+        frappe.log_error(
+            title=f"QBO Credit Memo Completed - {invoice.name}",
+            message=f"STATUS: {res.status_code}\n\nRESPONSE:\n{res.text}"
+        )
+
         if res.status_code != 200:
-            frappe.log_error(
-                f"Status Code: {res.status_code}\nResponse Body: {res.text}",
-                f"QuickBooks Credit Memo Sync Failed - {invoice.name}"
-            )
             frappe.throw(f"Failed to sync Credit Memo {invoice.name}")
 
         try:
             qb_data = res.json()
         except Exception:
-            frappe.log_error(res.text, f"QuickBooks Non-JSON Response - {invoice.name}")
             frappe.throw(f"QuickBooks returned non-JSON response for Credit Memo {invoice.name}")
 
         qb_id = qb_data.get("CreditMemo", {}).get("Id")
         if qb_id:
-              # Save QB CreditMemo ID back to Sales Invoice
+            # Save QB CreditMemo ID back to Sales Invoice
             frappe.db.set_value("Sales Invoice", invoice.name, "custom_quickbooks_credit_memo_id", qb_id)
             frappe.db.commit()
 
@@ -1428,7 +1048,6 @@ def sync_credit_memo(invoice):
 
             return qb_id
         else:
-            frappe.log_error(res.text, f"QuickBooks Credit Memo Missing ID - {invoice.name}")
             frappe.throw(f"Credit Memo synced but no Id returned for {invoice.name}")
 
     except requests.exceptions.RequestException as e:
@@ -1555,7 +1174,6 @@ def refresh_sales_invoice_list(docname: str):
 
     return {"message": f"Refreshed {len(invoices)} invoices (excluding cancelled)."}
 
-
 @frappe.whitelist()
 def bulk_sync_invoices(docname: str, selected_invoices=None):
     """
@@ -1594,8 +1212,6 @@ def bulk_sync_invoices(docname: str, selected_invoices=None):
     except Exception:
         frappe.log_error("Bulk Sync Invoices Error", frappe.get_traceback())
         return {"message": "An error occurred while syncing invoices. Please check error logs."}
-
-
 
 @frappe.whitelist()
 def sync_selected_sales_invoices(docname: str, selected_si: list):
@@ -1668,8 +1284,6 @@ def sync_selected_sales_invoices(docname: str, selected_si: list):
         "skipped": skipped
     }
 
-
-
 @frappe.whitelist()
 def refresh_purchase_invoices(docname: str):
     """
@@ -1704,7 +1318,6 @@ def refresh_purchase_invoices(docname: str):
     doc.save(ignore_permissions=True)
 
     return {"message": f"Refreshed {len(invoices)} invoices (excluding cancelled)."}
-
 
 
 @frappe.whitelist()

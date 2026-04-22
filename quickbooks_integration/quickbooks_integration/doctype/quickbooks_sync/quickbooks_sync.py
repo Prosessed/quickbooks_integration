@@ -189,6 +189,7 @@ class QuickBooksSync(Document):
 		)
 		return {"total": total, "synced": synced, "remaining": remaining, "status": status, "last_sync_date": last_sync_date}
 
+    
 	def _get_supplier_statistics(self):
 		total = frappe.db.count("Supplier")
 		synced = frappe.db.count("Supplier", filters={"custom_quickbooks_supplier_id": ["!=", ""]})
@@ -349,6 +350,60 @@ class QuickBooksSync(Document):
 		)
 		return {"total": total, "synced": synced, "remaining": remaining, "status": status, "last_sync_date": last_sync_date}
 
+
+	def _get_sales_invoice_statistics(self):
+		total = frappe.db.count("Sales Invoice", filters={"docstatus": ["!=", 2]})
+		synced = frappe.db.sql(
+			"""
+			SELECT COUNT(*) FROM `tabSales Invoice`
+			WHERE docstatus != 2
+			AND IFNULL(custom_quickbooks_invoice_id, '') != ''
+			""",
+			as_list=True,
+		)[0][0]
+		remaining = total - synced
+		if total == 0:
+			status = "No Data"
+		elif synced == total:
+			status = "All Synced"
+		elif synced > 0:
+			status = "Partially Synced"
+		else:
+			status = "Not Started"
+		last_sync_date = frappe.db.get_value(
+			"Sales Invoice",
+			{"docstatus": ["!=", 2], "custom_quickbooks_invoice_id": ["!=", ""]},
+			"modified",
+			order_by="modified desc",
+		)
+		return {"total": total, "synced": synced, "remaining": remaining, "status": status, "last_sync_date": last_sync_date}
+
+	def _get_purchase_invoice_statistics(self):
+		total = frappe.db.count("Purchase Invoice", filters={"docstatus": ["!=", 2]})
+		synced = frappe.db.sql(
+			"""
+			SELECT COUNT(*) FROM `tabPurchase Invoice`
+			WHERE docstatus != 2
+			AND IFNULL(custom_quickbooks_bill_id, '') != ''
+			""",
+			as_list=True,
+		)[0][0]
+		remaining = total - synced
+		if total == 0:
+			status = "No Data"
+		elif synced == total:
+			status = "All Synced"
+		elif synced > 0:
+			status = "Partially Synced"
+		else:
+			status = "Not Started"
+		last_sync_date = frappe.db.get_value(
+			"Purchase Invoice",
+			{"docstatus": ["!=", 2], "custom_quickbooks_bill_id": ["!=", ""]},
+			"modified",
+			order_by="modified desc",
+		)
+		return {"total": total, "synced": synced, "remaining": remaining, "status": status, "last_sync_date": last_sync_date}
 
 @frappe.whitelist()
 def start_customer_sync():
@@ -627,25 +682,34 @@ def sync_sales_order_to_quickbooks(docname=None):
         # ---- Helper: get tax code ----
         def get_tax_code(item):
             tax_template = item.item_tax_template
-            if not tax_template:
-                # Try to fetch from Item master
-                tax_template = frappe.db.get_value("Item", item.item_code, "item_tax_template")
+            # if not tax_template:
+            #     # Try to fetch from Item master
+            #     tax_template = frappe.db.get_value("Item", item.item_code, "item_tax_template")
 
             if not tax_template:
-                return "5"
+
+                return "4"
+
+
             try:
-                tax_code = frappe.get_doc("Item Tax Template", tax_template).custom_quickbooks_gst_id or "5"
-                frappe.log_error(
-                    title="QBO Sync - Tax Code Retrieved",
-                    message=f"Item: {item.item_code}\nTax Template: {tax_template}\nTax Code: {tax_code}"
-                )
+                tax_code = frappe.get_doc("Item Tax Template", tax_template).custom_quickbooks_gst_id
+
+                if not tax_code:
+                    error_msg = f"Tax template '{tax_template}' for item {item.item_code} has no QuickBooks GST ID mapped"
+                    frappe.log_error(
+                        title="QBO Sync - Missing QuickBooks GST ID",
+                        message=error_msg
+                    )
+                    frappe.throw(error_msg)
+
                 return tax_code
+
             except Exception as e:
                 frappe.log_error(
-                    title="QBO Sync - Tax Code Error",
-                    message=f"Error fetching GST from {tax_template}\nItem: {item.item_code}\nError: {str(e)}"
+                    title="QBO Sync - Tax Code Fetch Error",
+                    message=f"Error fetching tax code for item {item.item_code} in Sales Invoice {docname}: {str(e)}"
                 )
-                return "5"
+                frappe.throw(f"Failed to fetch tax code for item {item.item_code}: {str(e)}")
 
         # ---- Prepare line items ----
         line_items = []
@@ -925,7 +989,7 @@ def sync_invoice_to_quickbooks(docname=None):
     to avoid duplication and ensure consistent discount handling.
     """
     try:
-        frappe.log_error(f"Syncing Invoice {docname} via sync_invoice_to_quickbooks wrapper")
+
 
         # Call the centralized function in api.py
         result = sync_single_sales_invoice(docname)
@@ -2519,6 +2583,7 @@ def refresh_all_counts(docname: str):
         "purchase_invoice_sync_status": getattr(doc, "purchase_invoice_sync_status", "Not Started"),
         "purchase_invoice_last_sync_date": getattr(doc, "purchase_invoice_last_sync_date", None),
     }
+
 
 @frappe.whitelist()
 def refresh_item_list(docname: str):
