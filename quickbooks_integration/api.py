@@ -612,7 +612,7 @@ def sync_single_sales_invoice(docname):
                     title="QBO Sync - Tax Code Fetch Error",
                     message=f"Error fetching tax code for item {item.item_code} in Sales Invoice {docname}: {str(e)}"
                 )
-               
+
 
 
                 # ---- Prepare line items ----
@@ -962,8 +962,8 @@ def sync_credit_memo(invoice):
         "Accept": "application/json"
     }
 
-    
-   
+
+
 
     def get_tax_code(item):
 
@@ -971,8 +971,8 @@ def sync_credit_memo(invoice):
             tax_template = item.item_tax_template
 
             if not tax_template:
-                
-                return "4"  
+
+                return "4"
 
             tax_template_doc = frappe.get_doc("Item Tax Template", tax_template)
 
@@ -981,7 +981,7 @@ def sync_credit_memo(invoice):
             return tax_code
 
         except Exception as e:
-            
+
             frappe.log_error(str(e), "QuickBooks Tax Code Fetch Error")
 
 
@@ -1593,7 +1593,8 @@ def sync_debit_note_to_quickbooks(invoice):
             "Amount": amount,
             "Description": item.item_name or item.item_code,
             "ItemBasedExpenseLineDetail": {
-                "ItemRef": {"value": frappe.db.get_value("Item", item.item_code, "custom_quickbooks_item_id") or "3446"},
+                # frappe.db.get_value("Item", item.item_code, "custom_quickbooks_item_id")
+                "ItemRef": {"value": "3446"},
                 "Qty": qty,
                 "UnitPrice": rate,
                 "TaxCodeRef": {"value": "TAX"}
