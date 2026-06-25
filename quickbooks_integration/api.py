@@ -322,8 +322,18 @@ def sync_sales_invoice_cancellation(doc_name):
     """
     Called via Frappe doc_events on Sales Invoice cancel.
     """
-    # Fetch the Sales Invoice document using the doc_name
     doc = frappe.get_doc("Sales Invoice", doc_name)
+
+    if doc.is_return:
+        qb_credit_memo_id = doc.get("custom_quickbooks_credit_memo_id")
+
+        if not qb_credit_memo_id:
+            frappe.msgprint(f"No QuickBooks Credit Memo ID found for {doc.name}. Skipping QuickBooks cancellation.")
+            return
+
+        cancel_quickbooks_credit_memo(qb_credit_memo_id)
+        frappe.msgprint(f"Credit Note {doc.name} successfully cancelled in QuickBooks.")
+        return
 
     qb_invoice_id = doc.get("custom_quickbooks_invoice_id")
 
@@ -425,6 +435,86 @@ def cancel_quickbooks_invoice(invoice_id):
 
     return _("Invoice {0} has been successfully cancelled in QuickBooks.").format(invoice_id)
 
+
+@frappe.whitelist()
+def get_quickbooks_credit_memo_sync_token(credit_memo_id):
+    """
+    Fetch the latest SyncToken for a QuickBooks Credit Memo by its ID.
+    """
+    if not credit_memo_id:
+        frappe.throw("QuickBooks Credit Memo ID is required.")
+
+    settings = frappe.get_single("QuickBooks Settings")
+    access_token = settings.access_token
+    realm_id = settings.quickbooks_company_id
+    minor_version = settings.minor_version or "75"
+    base_url = f"https://{settings.base_url.replace('https://', '').strip('/')}/v3/company/{realm_id}"
+
+    url = f"{base_url}/creditmemo/{credit_memo_id}?minorversion={minor_version}"
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json"
+    }
+
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as e:
+        frappe.throw(f"Failed to fetch Credit Memo from QuickBooks. Error: {str(e)}")
+
+    credit_memo_data = data.get("CreditMemo")
+    if not credit_memo_data:
+        frappe.throw(f"No Credit Memo data found for ID {credit_memo_id} in QuickBooks.")
+
+    sync_token = credit_memo_data.get("SyncToken")
+    if sync_token is None:
+        frappe.throw(f"SyncToken not found for QuickBooks Credit Memo ID {credit_memo_id}.")
+
+    return sync_token
+
+
+@frappe.whitelist()
+def cancel_quickbooks_credit_memo(credit_memo_id):
+    refresh_quickbooks_access_token()
+
+    if not credit_memo_id:
+        frappe.throw("QuickBooks Credit Memo ID is required.")
+
+    settings = frappe.get_single("QuickBooks Settings")
+    access_token = settings.access_token
+    realm_id = settings.quickbooks_company_id
+    minor_version = settings.minor_version or "75"
+
+    base_url = settings.base_url.rstrip("/")
+    url = f"{base_url}/v3/company/{realm_id}/creditmemo?operation=delete&minorversion={minor_version}"
+
+    sync_token = get_quickbooks_credit_memo_sync_token(credit_memo_id)
+    frappe.logger().info(f"[QB] SyncToken for Credit Memo {credit_memo_id}: {sync_token}")
+    frappe.logger().info(f"[QB] Delete Credit Memo Request URL: {url}")
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+
+    payload = {
+        "Id": credit_memo_id,
+        "SyncToken": sync_token
+    }
+
+    frappe.logger().info(f"[QB] Delete Credit Memo Request Payload: {payload}")
+
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        frappe.logger().info(f"[QB] Delete Credit Memo Response: {response.text}")
+        response.raise_for_status()
+    except requests.RequestException as e:
+        frappe.throw(f"Failed to cancel Credit Memo in QuickBooks. Error: {str(e)}")
+
+    return _("Credit Memo {0} has been successfully cancelled in QuickBooks.").format(credit_memo_id)
 
 
 @frappe.whitelist()
