@@ -230,15 +230,21 @@ doctype_js = {
 
 doc_events = {
     "Sales Invoice": {
+        "validate": "quickbooks_integration.utils.clear_quickbooks_integration_fields_on_amend",
         "on_submit": "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.handle_invoice_save",
         "on_cancel": "quickbooks_integration.api.enqueue_sync_invoice_cancellation_to_quickbooks"
     },
     "Purchase Invoice": {
+        "validate": "quickbooks_integration.utils.clear_quickbooks_integration_fields_on_amend",
         "on_submit": "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.sync_purchase_invoice_to_quickbooks",
         "on_cancel": "quickbooks_integration.api.sync_purchase_invoice_cancellation"
     },
     "Sales Order": {
+        "validate": "quickbooks_integration.utils.clear_quickbooks_integration_fields_on_amend",
         "on_submit": "quickbooks_integration.quickbooks_integration.doctype.quickbooks_sync.quickbooks_sync.handle_sales_order_submit"
+    },
+    "Purchase Order": {
+        "validate": "quickbooks_integration.utils.clear_quickbooks_integration_fields_on_amend",
     }
 }
 

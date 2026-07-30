@@ -10,6 +10,7 @@ import requests
 from frappe import _
 from frappe.utils import now_datetime, nowdate, flt
 from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
+from quickbooks_integration.utils import set_quickbooks_sync_status
 
 
 @frappe.whitelist(allow_guest=True)
@@ -129,6 +130,73 @@ def refresh_quickbooks_access_token():
     except Exception:
         frappe.log_error(frappe.get_traceback(), "QuickBooks Access Token Refresh Failed")
         frappe.throw(_("Something went wrong while refreshing QuickBooks access token."))
+
+
+@frappe.whitelist()
+def lookup_quickbooks_item_by_name(item_name):
+    """Query QuickBooks for an Item by Name using credentials from QuickBooks Settings.
+
+    Returns:
+        dict: { items: list, count: int, query: str }
+    """
+    item_name = (item_name or "").strip()
+    if not item_name:
+        frappe.throw(_("Item Name is required."))
+
+    settings = frappe.get_single("QuickBooks Settings")
+    if not settings.base_url:
+        frappe.throw(_("QuickBooks Base URL is not set in QuickBooks Settings."))
+    if not settings.quickbooks_company_id:
+        frappe.throw(_("QuickBooks Company ID is not set in QuickBooks Settings."))
+    if not settings.refresh_token and not settings.access_token:
+        frappe.throw(_("QuickBooks is not authorized. Please authorize first."))
+
+    refresh_quickbooks_access_token()
+    settings = frappe.get_single("QuickBooks Settings")
+
+    escaped_name = item_name.replace("'", "''")
+    query = f"SELECT * FROM Item WHERE Name = '{escaped_name}'"
+    base_url = settings.base_url.rstrip("/")
+    company_id = settings.quickbooks_company_id
+    minor_version = settings.minor_version or "75"
+    url = f"{base_url}/v3/company/{company_id}/query"
+
+    headers = {
+        "Authorization": f"Bearer {settings.access_token}",
+        "Accept": "application/json",
+        "Content-Type": "text/plain",
+    }
+
+    try:
+        response = requests.get(
+            url,
+            headers=headers,
+            params={"query": query, "minorversion": minor_version},
+            timeout=30,
+        )
+        if response.status_code != 200:
+            frappe.log_error(response.text, "QuickBooks Item Lookup Error")
+            frappe.throw(
+                _("Failed to look up QuickBooks Item (HTTP {0}).").format(response.status_code)
+            )
+
+        payload = response.json()
+        items = payload.get("QueryResponse", {}).get("Item", [])
+        if isinstance(items, dict):
+            items = [items]
+        if not items:
+            items = []
+
+        return {
+            "items": items,
+            "count": len(items),
+            "query": query,
+        }
+    except frappe.ValidationError:
+        raise
+    except Exception:
+        frappe.log_error(frappe.get_traceback(), "QuickBooks Item Lookup Failed")
+        frappe.throw(_("Something went wrong while looking up the QuickBooks Item."))
 
 
 @frappe.whitelist()
@@ -573,6 +641,20 @@ def sync_purchase_invoice_cancellation(doc, method):
     """
     qb_purchase_order_id = doc.get("custom_quickbooks_bill_id")
 
+    settings = frappe.get_single("QuickBooks Settings")
+    allow_raw = getattr(settings, "allow_purchase_invoice_sync", 1)
+    if allow_raw is None or str(allow_raw).strip() == "":
+        allow = 1
+    else:
+        try:
+            allow = int(allow_raw)
+        except Exception:
+            allow = 1
+
+    if allow != 1:
+        frappe.msgprint(_("This setting is turned off. Please enable."), indicator="red")
+        return
+
     if not qb_purchase_order_id:
         frappe.msgprint(_("No QuickBooks Purchase Order ID found for {0}. Skipping cancellation.").format(doc.name))
         return
@@ -626,6 +708,64 @@ def cancel_quickbooks_purchase_order(purchase_order_id):
 
     return _("Purchase Order {0} has been successfully cancelled in QuickBooks.").format(purchase_order_id)
 
+
+def _find_quickbooks_tax_code(company, tax_type):
+    """Find QuickBooks GST ID from Item Tax Template by matching title/name patterns."""
+    if not company:
+        frappe.throw(_("Company is required to resolve QuickBooks tax code."))
+
+    cache_key = f"qb_tax_code_{tax_type}_{company}"
+    cached = frappe.cache().get_value(cache_key)
+    if cached:
+        return cached
+
+    templates = frappe.get_all(
+        "Item Tax Template",
+        filters={"company": company, "disabled": 0},
+        fields=["name", "title", "custom_quickbooks_gst_id"],
+        order_by="modified desc",
+    )
+
+    def is_gst_free(label):
+        normalized = (label or "").upper()
+        return "GST FREE" in normalized
+
+    def is_gst_taxable(label):
+        normalized = (label or "").upper()
+        if "GST FREE" in normalized or "GST EXEMPT" in normalized:
+            return False
+        return "GST" in normalized
+
+    matcher = is_gst_free if tax_type == "gst_free" else is_gst_taxable
+    tax_label = "GST FREE" if tax_type == "gst_free" else "GST"
+
+    for template in templates:
+        labels = {template.title, template.name}
+        if not any(matcher(label) for label in labels if label):
+            continue
+
+        tax_code = template.custom_quickbooks_gst_id
+        if not tax_code:
+            frappe.throw(
+                _("QuickBooks GST ID not configured on Item Tax Template '{0}'").format(template.name)
+            )
+
+        frappe.cache().set_value(cache_key, tax_code)
+        return tax_code
+
+    frappe.throw(
+        _("No enabled Item Tax Template containing '{0}' found for company '{1}'").format(
+            tax_label, company
+        )
+    )
+
+
+def get_quickbooks_gst_free_tax_code(company):
+    return _find_quickbooks_tax_code(company, "gst_free")
+
+
+def get_quickbooks_gst_tax_code(company):
+    return _find_quickbooks_tax_code(company, "gst")
 
 
 @frappe.whitelist(allow_guest=True)
@@ -681,8 +821,7 @@ def sync_single_sales_invoice(docname):
             #     tax_template = frappe.db.get_value("Item", item.item_code, "item_tax_template")
 
             if not tax_template:
-
-                return "4"
+                return get_quickbooks_gst_free_tax_code(doc.company)
 
             try:
                 tax_code = frappe.get_doc("Item Tax Template", tax_template).custom_quickbooks_gst_id
@@ -783,8 +922,8 @@ def sync_single_sales_invoice(docname):
             # STRATEGY: Send fixed amount (no percentage)
 
             # Determine dominant tax code (Tax code with highest total amount)
-            # Default to "5" (GST) if no items or something fails
-            discount_tax_code = "5"
+            # Default to company GST template if no items or something fails
+            discount_tax_code = get_quickbooks_gst_tax_code(doc.company)
             if tax_code_weights:
                 try:
                     # Find key with max value
@@ -840,10 +979,7 @@ def sync_single_sales_invoice(docname):
             # "Grand Total" -> Discount applied AFTER tax
             apply_tax_after_discount = False
             # Discount line needs a NON-TAXABLE code so it doesn't reduce the calculated tax
-            # We force it to "Non-Taxable" (usually ID "4" or "NON" in standard QBO AU/Global)
-            # You might need to adjust "4" if your specific QBO Non-Taxable code is different.
-            # Assuming '4' based on your earlier payload which had "TaxCodeRef": {"value": "4"} for a line item.
-            discount_tax_code = "4" # Or "NON" or whatever is "Tax Free" in your system
+            discount_tax_code = get_quickbooks_gst_free_tax_code(doc.company)
 
             frappe.log_error(
                 title="QBO Sync - Discount Logic",
@@ -907,6 +1043,7 @@ def sync_single_sales_invoice(docname):
                 doc.db_set("status", "Confirmed")
                 # doc.db_set("is_synced", 1)
                 frappe.db.commit()
+                set_quickbooks_sync_status("Sales Invoice", docname, "Success")
 
                 frappe.log_error(
                     title="QBO Sync - SUCCESS",
@@ -916,7 +1053,7 @@ def sync_single_sales_invoice(docname):
                 frappe.msgprint(f"Successfully synced to QuickBooks! QBO Invoice ID: {qbo_id}")
                 return {"id": qbo_id, "response": body}
             else:
-
+                set_quickbooks_sync_status("Sales Invoice", docname, "Failed")
                 return {"error": "Unexpected response format", "response": body}
         else:
             # Extract detailed error information
@@ -927,14 +1064,14 @@ def sync_single_sales_invoice(docname):
             for error in errors:
                 error_messages.append(f"Code: {error.get('code')}, Message: {error.get('Message')}, Detail: {error.get('Detail')}")
 
-
+            set_quickbooks_sync_status("Sales Invoice", docname, "Failed")
             error_msg = error_messages[0] if error_messages else "Unknown error"
             frappe.msgprint(f"QuickBooks sync failed: {error_msg}")
             return {"error": f"Sync failed ({res.status_code})", "details": error_messages, "response": body}
 
     except Exception as e:
         import traceback
-
+        set_quickbooks_sync_status("Sales Invoice", docname, "Failed")
         frappe.msgprint(f"Error during sync: {str(e)}")
         return {"error": str(e), "traceback": traceback.format_exc()}
 
@@ -1061,8 +1198,7 @@ def sync_credit_memo(invoice):
             tax_template = item.item_tax_template
 
             if not tax_template:
-
-                return "4"
+                return get_quickbooks_gst_free_tax_code(invoice.company)
 
             tax_template_doc = frappe.get_doc("Item Tax Template", tax_template)
 
@@ -1121,11 +1257,13 @@ def sync_credit_memo(invoice):
         )
 
         if res.status_code != 200:
+            set_quickbooks_sync_status("Sales Invoice", invoice.name, "Failed")
             frappe.throw(f"Failed to sync Credit Memo {invoice.name}")
 
         try:
             qb_data = res.json()
         except Exception:
+            set_quickbooks_sync_status("Sales Invoice", invoice.name, "Failed")
             frappe.throw(f"QuickBooks returned non-JSON response for Credit Memo {invoice.name}")
 
         qb_id = qb_data.get("CreditMemo", {}).get("Id")
@@ -1133,14 +1271,17 @@ def sync_credit_memo(invoice):
             # Save QB CreditMemo ID back to Sales Invoice
             frappe.db.set_value("Sales Invoice", invoice.name, "custom_quickbooks_credit_memo_id", qb_id)
             frappe.db.commit()
+            set_quickbooks_sync_status("Sales Invoice", invoice.name, "Success")
 
             frappe.msgprint(f"Credit Memo synced successfully with QuickBooks. QB ID: {qb_id}")
 
             return qb_id
         else:
+            set_quickbooks_sync_status("Sales Invoice", invoice.name, "Failed")
             frappe.throw(f"Credit Memo synced but no Id returned for {invoice.name}")
 
     except requests.exceptions.RequestException as e:
+        set_quickbooks_sync_status("Sales Invoice", invoice.name, "Failed")
         frappe.log_error(str(e), f"QuickBooks Credit Memo Request Error - {invoice.name}")
         frappe.throw(f"Error syncing Credit Memo {invoice.name}: {str(e)}")
 
@@ -1423,6 +1564,21 @@ def bulk_sync_purchase_invoices(docname: str, selected_invoices=None):
 
         doc = frappe.get_doc("QuickBooks Sync", docname)
 
+        settings = frappe.get_single("QuickBooks Settings")
+        allow_raw = getattr(settings, "allow_purchase_invoice_sync", 1)
+        if allow_raw is None or str(allow_raw).strip() == "":
+            allow = 1
+        else:
+            try:
+                allow = int(allow_raw)
+            except Exception:
+                allow = 1
+
+        if allow != 1:
+            msg = _("This setting is turned off. Please enable.")
+            frappe.msgprint(msg, indicator="red")
+            return {"message": {"message": msg}}
+
         # If coming from frontend with __checked rows
         if selected_invoices:
             # Ensure list is parsed correctly from JSON
@@ -1478,6 +1634,21 @@ def sync_selected_purchase_invoices(docname: str, selected_si: list):
     """
     if not selected_si:
         return "No Purchase Invoice selected."
+
+    settings = frappe.get_single("QuickBooks Settings")
+    allow_raw = getattr(settings, "allow_purchase_invoice_sync", 1)
+    if allow_raw is None or str(allow_raw).strip() == "":
+        allow = 1
+    else:
+        try:
+            allow = int(allow_raw)
+        except Exception:
+            allow = 1
+
+    if allow != 1:
+        msg = _("This setting is turned off. Please enable.")
+        frappe.msgprint(msg, indicator="red")
+        return {"synced": [], "failed": [], "skipped": selected_si}
 
     doc = frappe.get_doc("QuickBooks Sync", docname)
     synced, failed, skipped = [], [], []
@@ -1575,6 +1746,19 @@ def sync_selected_purchase_invoices(docname: str, selected_si: list):
 
 @frappe.whitelist()
 def sync_single_purchase_invoice_to_quickbooks(purchase_invoice_name):
+    settings = frappe.get_single("QuickBooks Settings")
+    allow_raw = getattr(settings, "allow_purchase_invoice_sync", 1)
+    if allow_raw is None or str(allow_raw).strip() == "":
+        allow = 1
+    else:
+        try:
+            allow = int(allow_raw)
+        except Exception:
+            allow = 1
+
+    if allow != 1:
+        frappe.msgprint(_("This setting is turned off. Please enable."), indicator="red")
+        return
     refresh_quickbooks_access_token()
     """Sync a specific Purchase Invoice to QuickBooks as a Bill or Vendor Credit on Submit."""
 
@@ -1596,6 +1780,18 @@ def sync_single_purchase_invoice_to_quickbooks(purchase_invoice_name):
     return create_quickbooks_bill(invoice)
 
 
+def get_purchase_invoice_credit_item_code():
+    """QuickBooks Item ID for Purchase Invoice line ItemRef. Falls back to 3446."""
+    credit_item_code = frappe.db.get_single_value("QuickBooks Sync", "credit_item_code")
+    return (credit_item_code or "").strip() or "3446"
+
+
+def get_purchase_invoice_credit_item_purchase_tax_code():
+    """QuickBooks Purchase Tax Code ID for Purchase Invoice line TaxCodeRef. Falls back to 11."""
+    tax_code = frappe.db.get_single_value("QuickBooks Sync", "credit_item_purchase_tax_code")
+    return (tax_code or "").strip() or "11"
+
+
 def create_quickbooks_bill(invoice):
     settings = frappe.get_single("QuickBooks Settings")
     access_token = settings.access_token
@@ -1607,6 +1803,9 @@ def create_quickbooks_bill(invoice):
     if not vendor_qb_id:
         frappe.throw(f"QuickBooks Vendor ID not found for Supplier: {invoice.supplier}.")
 
+    credit_item_code = get_purchase_invoice_credit_item_code()
+    purchase_tax_code = get_purchase_invoice_credit_item_purchase_tax_code()
+
     line_items = []
     for item in invoice.items:
         description = item.item_name or item.item_code
@@ -1615,10 +1814,10 @@ def create_quickbooks_bill(invoice):
             "Amount": float(item.amount),
             "Description": description,
             "ItemBasedExpenseLineDetail": {
-                "ItemRef": {"value": "3446"},
+                "ItemRef": {"value": credit_item_code},
                 "Qty": float(item.qty),
                 "UnitPrice": float(item.rate),
-                "TaxCodeRef": {"value": "11"}
+                "TaxCodeRef": {"value": purchase_tax_code}
             }
         })
 
@@ -1645,6 +1844,7 @@ def create_quickbooks_bill(invoice):
         response_json = response.json()
         frappe.log_error("QuickBooks Bill Sync - Response", f"{invoice.name}\n{frappe.as_json(response_json)}")
     except Exception as e:
+        set_quickbooks_sync_status("Purchase Invoice", invoice.name, "Failed")
         frappe.log_error("QuickBooks Bill Sync - Exception", frappe.get_traceback())
         frappe.throw(f"QuickBooks sync failed due to a request error: {str(e)}")
 
@@ -1652,9 +1852,11 @@ def create_quickbooks_bill(invoice):
         qb_bill_id = response_json["Bill"]["Id"]
         frappe.db.set_value("Purchase Invoice", invoice.name, "custom_quickbooks_bill_id", qb_bill_id)
         frappe.db.commit()
+        set_quickbooks_sync_status("Purchase Invoice", invoice.name, "Success")
         frappe.msgprint(f"Purchase Invoice {invoice.name} synced as Bill in QuickBooks. ID: {qb_bill_id}")
         return {"id": qb_bill_id}
     else:
+        set_quickbooks_sync_status("Purchase Invoice", invoice.name, "Failed")
         frappe.throw(f"QuickBooks sync failed. Response: {response.text}")
 
 
@@ -1671,6 +1873,9 @@ def sync_debit_note_to_quickbooks(invoice):
     if not vendor_qb_id:
         frappe.throw(f"QuickBooks Vendor ID not found for Supplier: {invoice.supplier}.")
 
+    credit_item_code = get_purchase_invoice_credit_item_code()
+    purchase_tax_code = get_purchase_invoice_credit_item_purchase_tax_code()
+
     # 🔹 Use ItemBasedExpenseLineDetail instead
     line_items = []
     for item in invoice.items:
@@ -1683,11 +1888,10 @@ def sync_debit_note_to_quickbooks(invoice):
             "Amount": amount,
             "Description": item.item_name or item.item_code,
             "ItemBasedExpenseLineDetail": {
-                # frappe.db.get_value("Item", item.item_code, "custom_quickbooks_item_id")
-                "ItemRef": {"value": "3446"},
+                "ItemRef": {"value": credit_item_code},
                 "Qty": qty,
                 "UnitPrice": rate,
-                "TaxCodeRef": {"value": "TAX"}
+                "TaxCodeRef": {"value": purchase_tax_code}
             }
         })
 
@@ -1720,9 +1924,11 @@ def sync_debit_note_to_quickbooks(invoice):
             "custom_quickbooks_debitnote_id": qb_credit_id,
         })
         frappe.db.commit()
+        set_quickbooks_sync_status("Purchase Invoice", invoice.name, "Success")
         frappe.msgprint(f"Return Invoice {invoice.name} synced as Vendor Credit in QuickBooks. ID: {qb_credit_id}")
         return {"id": qb_credit_id}
     else:
+        set_quickbooks_sync_status("Purchase Invoice", invoice.name, "Failed")
         frappe.throw(f"Vendor Credit sync failed. Response: {response.text}")
 
 

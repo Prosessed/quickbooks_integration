@@ -113,6 +113,8 @@
         "sales_invoice_list",
         "purchase_invoices_tab",
         "sync_purchase_invoices_section",
+        "credit_item_code",
+        "credit_item_purchase_tax_code",
         "purchase_invoice_stats_section",
         "purchase_invoice_total_count",
         "purchase_invoice_synced_count",
@@ -738,6 +740,18 @@
             "label": "Sync Purchase Invoices"
         },
         {
+            "description": "QuickBooks Item ID used as ItemRef when syncing Purchase Invoices (Bills / Vendor Credits). Falls back to 3446 if empty.",
+            "fieldname": "credit_item_code",
+            "fieldtype": "Data",
+            "label": "Credit Item Code"
+        },
+        {
+            "description": "QuickBooks Purchase Tax Code ID (PurchaseTaxCodeRef) for the Credit Item. Used as TaxCodeRef on Bill / Vendor Credit lines. Falls back to 11 if empty. Look this up via QuickBooks Settings → Lookup Item.",
+            "fieldname": "credit_item_purchase_tax_code",
+            "fieldtype": "Data",
+            "label": "Credit Item Purchase Tax Code"
+        },
+        {
             "fieldname": "purchase_invoice_stats_section",
             "fieldtype": "Section Break",
             "label": "Statistics"
@@ -817,7 +831,7 @@
     "index_web_pages_for_search": 1,
     "issingle": 1,
     "links": [],
-    "modified": "2025-01-23 00:00:00.000000",
+    "modified": "2026-07-28 00:00:00.000000",
     "modified_by": "Administrator",
     "module": "Quickbooks Integration",
     "name": "QuickBooks Sync",

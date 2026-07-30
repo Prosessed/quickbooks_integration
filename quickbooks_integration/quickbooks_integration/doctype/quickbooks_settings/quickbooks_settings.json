@@ -47,7 +47,9 @@
      "sales_documents_section",
      "allow_invoice_sync",
      "column_break_sales_docs",
-     "allow_order_sync"
+     "allow_order_sync",
+     "purchase_documents_section",
+     "allow_purchase_invoice_sync"
     ],
     "fields": [
      {
@@ -277,6 +279,18 @@
       "fieldname": "allow_order_sync",
       "fieldtype": "Check",
       "label": "Allow Order Sync to QuickBooks"
+     },
+     {
+      "fieldname": "purchase_documents_section",
+      "fieldtype": "Section Break",
+      "label": "Purchase Documents"
+     },
+     {
+      "default": "1",
+      "description": "ERPNext ---> Quickbooks",
+      "fieldname": "allow_purchase_invoice_sync",
+      "fieldtype": "Check",
+      "label": "Allow Purchase Invoice Sync to QuickBooks"
      },
      {
       "fieldname": "webhook_secret_section",

@@ -34,6 +34,24 @@ frappe.ui.form.on("QuickBooks Sync", {
             frm._qb_stats_loaded = true;
             refresh_all_counts(frm);
         }
+
+        // Purchase Invoice sync gateway (from QuickBooks Settings)
+        if (!frm._qb_purchase_invoice_gate_loaded) {
+            frm._qb_purchase_invoice_gate_loaded = true;
+            frappe.db.get_single_value("QuickBooks Settings", "allow_purchase_invoice_sync")
+                .then((value) => {
+                    const allow = String(value) === "1" || value === 1 || value === true
+                    const btnField = frm.get_field("sync_purchase_invoices");
+                    if (!btnField) return;
+
+                    btnField.$input.prop("disabled", !allow);
+                    if (!allow) btnField.$input.addClass("disabled");
+                    else btnField.$input.removeClass("disabled");
+                })
+                .catch(() => {
+                    // If the settings value can't be loaded, keep the button enabled
+                });
+        }
     },
 
     /* ---------------- Customers ---------------- */

@@ -9,7 +9,16 @@ from frappe.model.document import Document
 import requests
 import frappe
 from frappe.utils import now
-from quickbooks_integration.api import refresh_quickbooks_access_token, sync_credit_memo_to_quickbooks, sync_selected_sales_invoices, sync_single_purchase_invoice_to_quickbooks, sync_single_sales_invoice
+from quickbooks_integration.api import (
+    get_quickbooks_gst_free_tax_code,
+    get_quickbooks_gst_tax_code,
+    refresh_quickbooks_access_token,
+    sync_credit_memo_to_quickbooks,
+    sync_selected_sales_invoices,
+    sync_single_purchase_invoice_to_quickbooks,
+    sync_single_sales_invoice,
+)
+from quickbooks_integration.utils import set_quickbooks_sync_status
 from frappe import _
 import time
 
@@ -687,8 +696,7 @@ def sync_sales_order_to_quickbooks(docname=None):
             #     tax_template = frappe.db.get_value("Item", item.item_code, "item_tax_template")
 
             if not tax_template:
-
-                return "4"
+                return get_quickbooks_gst_free_tax_code(doc.company)
 
 
             try:
@@ -797,8 +805,8 @@ def sync_sales_order_to_quickbooks(docname=None):
             # STRATEGY: Send fixed amount (no percentage)
 
             # Determine dominant tax code (Tax code with highest total amount)
-            # Default to "5" (GST) if no items or something fails
-            discount_tax_code = "5"
+            # Default to company GST template if no items or something fails
+            discount_tax_code = get_quickbooks_gst_tax_code(doc.company)
             if tax_code_weights:
                 try:
                     # Find key with max value
@@ -854,10 +862,7 @@ def sync_sales_order_to_quickbooks(docname=None):
             # "Grand Total" -> Discount applied AFTER tax
             apply_tax_after_discount = False
             # Discount line needs a NON-TAXABLE code so it doesn't reduce the calculated tax
-            # We force it to "Non-Taxable" (usually ID "4" or "NON" in standard QBO AU/Global)
-            # You might need to adjust "4" if your specific QBO Non-Taxable code is different.
-            # Assuming '4' based on your earlier payload which had "TaxCodeRef": {"value": "4"} for a line item.
-            discount_tax_code = "4" # Or "NON" or whatever is "Tax Free" in your system
+            discount_tax_code = get_quickbooks_gst_free_tax_code(doc.company)
 
             frappe.log_error(
                 title="QBO Sync - Discount Logic",
@@ -933,6 +938,7 @@ def sync_sales_order_to_quickbooks(docname=None):
 
                 doc.db_set("quickbooks_sales_order_id", qbo_id)
                 frappe.db.commit()
+                set_quickbooks_sync_status("Sales Order", docname, "Success")
 
                 frappe.log_error(
                     title="QBO Sync - SUCCESS",
@@ -942,6 +948,7 @@ def sync_sales_order_to_quickbooks(docname=None):
                 frappe.msgprint(f"Successfully synced to QuickBooks! QBO Estimate ID: {qbo_id}")
                 return {"id": qbo_id, "response": body}
             else:
+                set_quickbooks_sync_status("Sales Order", docname, "Failed")
                 frappe.log_error(
                     title="QBO Sync - Unexpected Response Format",
                     message=f"Sales Order: {docname}\nStatus: {res.status_code}\nResponse missing 'Estimate' key\nFull Response: {json.dumps(body, indent=2)}"
@@ -956,6 +963,7 @@ def sync_sales_order_to_quickbooks(docname=None):
             for error in errors:
                 error_messages.append(f"Code: {error.get('code')}, Message: {error.get('Message')}, Detail: {error.get('Detail')}")
 
+            set_quickbooks_sync_status("Sales Order", docname, "Failed")
             frappe.log_error(
                 title="QBO Sync - FAILED",
                 message=f"Sales Order: {docname}\n" +
@@ -971,6 +979,7 @@ def sync_sales_order_to_quickbooks(docname=None):
 
     except Exception as e:
         import traceback
+        set_quickbooks_sync_status("Sales Order", docname, "Failed")
         frappe.log_error(
             title="QBO Sync - EXCEPTION",
             message=f"Sales Order: {docname}\n" +
@@ -1074,6 +1083,43 @@ def sync_customers_from_quickbooks():
 
     frappe.logger().info("[QB SYNC] Completed customer sync job")
 
+def _is_group_node(doctype, name):
+    if not name:
+        return True
+    return bool(frappe.db.get_value(doctype, name, "is_group"))
+
+def _get_default_customer_group():
+    cached = frappe.cache().get_value("qb_sync_default_customer_group")
+    if cached and not _is_group_node("Customer Group", cached):
+        return cached
+
+    for name in ("Non GST Customer", "Commercial", "Individual", "Government", "Non Profit"):
+        if frappe.db.get_value("Customer Group", name, "is_group") == 0:
+            frappe.cache().set_value("qb_sync_default_customer_group", name)
+            return name
+
+    name = frappe.db.get_value("Customer Group", {"is_group": 0}, "name", order_by="name")
+    if not name:
+        frappe.throw(_("No non-group Customer Group found. Please create one before syncing customers."))
+
+    frappe.cache().set_value("qb_sync_default_customer_group", name)
+    return name
+
+def _get_default_territory():
+    cached = frappe.cache().get_value("qb_sync_default_territory")
+    if cached and not _is_group_node("Territory", cached):
+        return cached
+
+    for name in ("Rest Of The World", "Australia", "United States"):
+        if frappe.db.get_value("Territory", name, "is_group") == 0:
+            frappe.cache().set_value("qb_sync_default_territory", name)
+            return name
+
+    name = frappe.db.get_value("Territory", {"is_group": 0}, "name", order_by="name")
+    if name:
+        frappe.cache().set_value("qb_sync_default_territory", name)
+    return name
+
 def create_or_update_customer(qb_customer):
     """Create or update customer in ERPNext based on QuickBooks customer data."""
 
@@ -1096,8 +1142,12 @@ def create_or_update_customer(qb_customer):
     customer.customer_name = display_name
     customer.customer_type = "Company" if qb_customer.get("CompanyName") else "Individual"
     customer.custom_quickbooks_customer_id = qb_id
-    customer.customer_group = "All Customer Groups"
-    customer.territory = "All Territories"
+
+    if not customer.customer_group or _is_group_node("Customer Group", customer.customer_group):
+        customer.customer_group = _get_default_customer_group()
+
+    if not customer.territory or _is_group_node("Territory", customer.territory):
+        customer.territory = _get_default_territory()
 
     customer.save(ignore_permissions=True)
 
@@ -1922,6 +1972,18 @@ def sync_purchase_invoice_to_quickbooks(doc, method):
     if not settings.enable:
         frappe.frappe.msgprint('Please Enable Quickbooks Integration')
         return
+    allow_raw = getattr(settings, "allow_purchase_invoice_sync", 1)
+    if allow_raw is None or str(allow_raw).strip() == "":
+        allow = 1
+    else:
+        try:
+            allow = int(allow_raw)
+        except Exception:
+            allow = 1
+
+    if allow != 1:
+        frappe.msgprint(_("This setting is turned off. Please enable."), indicator="red")
+        return
     refresh_quickbooks_access_token()
 
     """Hook function to sync Purchase Invoice to QuickBooks on submit."""
@@ -2410,11 +2472,17 @@ def create_stock_reconciliation(reconciliation_items, is_last_page=False):
                 stock_reconciliation.purpose = purpose
 
                 # Set expense account for opening stock
+                # Prefer legacy "Temporary Opening - {abbr}", else ERPNext chart
+                # "18090 - Opening Balance Temporary - {abbr}"
                 if purpose == "Opening Stock" and company_abbr:
-                    expense_account = f"Temporary Opening - {company_abbr}"
-                    # Check if account exists, if not, skip it
-                    if frappe.db.exists("Account", expense_account):
-                        stock_reconciliation.expense_account = expense_account
+                    expense_account_candidates = [
+                        f"Temporary Opening - {company_abbr}",
+                        f"18090 - Opening Balance Temporary - {company_abbr}",
+                    ]
+                    for expense_account in expense_account_candidates:
+                        if frappe.db.exists("Account", expense_account):
+                            stock_reconciliation.expense_account = expense_account
+                            break
 
             # Prepare items list with all required fields
             items_list = []

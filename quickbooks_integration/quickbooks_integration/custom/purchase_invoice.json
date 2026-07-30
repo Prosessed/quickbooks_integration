@@ -43,7 +43,7 @@
    "modified_by": "Administrator",
    "module": "Quickbooks Integration",
    "name": "Purchase Invoice-custom_quickbooks_bill_id",
-   "no_copy": 0,
+   "no_copy": 1,
    "non_negative": 0,
    "options": "Supplier",
    "owner": "Administrator",
@@ -63,6 +63,21 @@
    "translatable": 0,
    "unique": 0,
    "width": null
+  },
+  {
+   "dt": "Purchase Invoice",
+   "fieldname": "custom_quickbooks_sync_status",
+   "fieldtype": "Select",
+   "label": "QuickBooks Sync Status",
+   "options": "Pending\nSuccess\nFailed",
+   "default": "Pending",
+   "insert_after": "custom_quickbooks_bill_id",
+   "description": "Tracks QuickBooks sync status for this Purchase Invoice.",
+   "read_only": 1,
+   "allow_on_submit": 1,
+   "no_copy": 1,
+   "module": "Quickbooks Integration",
+   "name": "Purchase Invoice-custom_quickbooks_sync_status"
   }
  ],
  "custom_perms": [],
