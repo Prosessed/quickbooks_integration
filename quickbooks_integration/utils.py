@@ -15,6 +15,7 @@ QUICKBOOKS_AMEND_CLEAR_FIELDS = {
 		"custom_quickbooks_invoice_id",
 		"custom_quickbooks_credit_memo_id",
 		"custom_quickbooks_sync_status",
+		"custom_is_cancelled_on_quickbooks",
 	],
 	"Purchase Order": [
 		# Add Purchase Order QuickBooks custom fields here when introduced

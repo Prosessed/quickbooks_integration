@@ -384,13 +384,27 @@ def enqueue_sync_invoice_cancellation_to_quickbooks(doc, method):
     frappe.enqueue(sync_sales_invoice_cancellation, queue='long', doc_name=doc.name)
 
 
+@frappe.whitelist()
+def cancel_sales_invoice_on_quickbooks(sales_invoice_name):
+    """
+    Manually or via hook: void/delete linked Invoice/Credit Memo in QuickBooks
+    and mark custom_is_cancelled_on_quickbooks.
+    """
+    if not sales_invoice_name:
+        frappe.throw(_("Sales Invoice name is required."))
+
+    return sync_sales_invoice_cancellation(sales_invoice_name)
 
 
 def sync_sales_invoice_cancellation(doc_name):
     """
-    Called via Frappe doc_events on Sales Invoice cancel.
+    Called via Frappe doc_events on Sales Invoice cancel (and manual retry).
     """
     doc = frappe.get_doc("Sales Invoice", doc_name)
+
+    if cint(doc.get("custom_is_cancelled_on_quickbooks")):
+        frappe.msgprint(_("Sales Invoice {0} is already marked cancelled on QuickBooks.").format(doc.name))
+        return
 
     if doc.is_return:
         qb_credit_memo_id = doc.get("custom_quickbooks_credit_memo_id")
@@ -400,6 +414,7 @@ def sync_sales_invoice_cancellation(doc_name):
             return
 
         cancel_quickbooks_credit_memo(qb_credit_memo_id)
+        mark_sales_invoice_cancelled_on_quickbooks(doc.name)
         frappe.msgprint(f"Credit Note {doc.name} successfully cancelled in QuickBooks.")
         return
 
@@ -410,7 +425,23 @@ def sync_sales_invoice_cancellation(doc_name):
         return
 
     cancel_quickbooks_invoice(qb_invoice_id)
+    mark_sales_invoice_cancelled_on_quickbooks(doc.name)
     frappe.msgprint(f"Sales Invoice {doc.name} successfully voided in QuickBooks.")
+
+
+def mark_sales_invoice_cancelled_on_quickbooks(sales_invoice_name):
+    """Mark Sales Invoice as cancelled in QuickBooks after successful QBO void/delete."""
+    fieldname = "custom_is_cancelled_on_quickbooks"
+    if not frappe.db.has_column("Sales Invoice", fieldname):
+        return
+
+    frappe.db.set_value(
+        "Sales Invoice",
+        sales_invoice_name,
+        fieldname,
+        1,
+        update_modified=False,
+    )
 
 
 @frappe.whitelist()
