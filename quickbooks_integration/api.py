@@ -8,7 +8,7 @@ from urllib.parse import urlencode
 import frappe
 import requests
 from frappe import _
-from frappe.utils import now_datetime, nowdate, flt
+from frappe.utils import now_datetime, nowdate, flt, cint
 from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry
 from quickbooks_integration.utils import set_quickbooks_sync_status
 
@@ -586,29 +586,20 @@ def cancel_quickbooks_credit_memo(credit_memo_id):
 
 
 @frappe.whitelist()
-def get_quickbooks_purchase_order_sync_token(purchase_order_id):
+def get_quickbooks_bill_sync_token(bill_id):
     """
-    Fetch the latest SyncToken for a QuickBooks Purchase Order by its ID.
-
-    Args:
-        purchase_order_id (str): The QuickBooks Purchase Order ID.
-
-    Returns:
-        str: SyncToken of the Purchase Order.
-
-    Raises:
-        frappe.ValidationError: If fetching the Purchase Order or SyncToken fails.
+    Fetch the latest SyncToken for a QuickBooks Bill by its ID.
     """
-    if not purchase_order_id:
-        frappe.throw(_("QuickBooks Purchase Order ID is required."))
+    if not bill_id:
+        frappe.throw(_("QuickBooks Bill ID is required."))
 
     settings = frappe.get_single("QuickBooks Settings")
     access_token = settings.access_token
     realm_id = settings.quickbooks_company_id
     minor_version = settings.minor_version or "75"
-    base_url = settings.base_url.rstrip("/").replace("https://", "").strip("/")
+    base_url = f"https://{settings.base_url.replace('https://', '').strip('/')}/v3/company/{realm_id}"
 
-    url = f"https://{base_url}/v3/company/{realm_id}/purchaseorder/{purchase_order_id}?minorversion={minor_version}"
+    url = f"{base_url}/bill/{bill_id}?minorversion={minor_version}"
 
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -620,26 +611,77 @@ def get_quickbooks_purchase_order_sync_token(purchase_order_id):
         response.raise_for_status()
         data = response.json()
     except requests.RequestException as e:
-        frappe.throw(_("Failed to fetch Purchase Order from QuickBooks. Error: {0}").format(str(e)))
+        frappe.throw(_("Failed to fetch Bill from QuickBooks. Error: {0}").format(str(e)))
 
-    purchase_order_data = data.get("PurchaseOrder")
-    if not purchase_order_data:
-        frappe.throw(_("No Purchase Order data found for ID {0} in QuickBooks.").format(purchase_order_id))
+    bill_data = data.get("Bill")
+    if not bill_data:
+        frappe.throw(_("No Bill data found for ID {0} in QuickBooks.").format(bill_id))
 
-    sync_token = purchase_order_data.get("SyncToken")
+    sync_token = bill_data.get("SyncToken")
     if sync_token is None:
-        frappe.throw(_("SyncToken not found for QuickBooks Purchase Order ID {0}.").format(purchase_order_id))
+        frappe.throw(_("SyncToken not found for QuickBooks Bill ID {0}.").format(bill_id))
 
     return sync_token
 
 
 @frappe.whitelist()
-def sync_purchase_invoice_cancellation(doc, method):
+def get_quickbooks_vendor_credit_sync_token(vendor_credit_id):
+    """
+    Fetch the latest SyncToken for a QuickBooks Vendor Credit by its ID.
+    """
+    if not vendor_credit_id:
+        frappe.throw(_("QuickBooks Vendor Credit ID is required."))
+
+    settings = frappe.get_single("QuickBooks Settings")
+    access_token = settings.access_token
+    realm_id = settings.quickbooks_company_id
+    minor_version = settings.minor_version or "75"
+    base_url = f"https://{settings.base_url.replace('https://', '').strip('/')}/v3/company/{realm_id}"
+
+    url = f"{base_url}/vendorcredit/{vendor_credit_id}?minorversion={minor_version}"
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json"
+    }
+
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+    except requests.RequestException as e:
+        frappe.throw(_("Failed to fetch Vendor Credit from QuickBooks. Error: {0}").format(str(e)))
+
+    vendor_credit_data = data.get("VendorCredit")
+    if not vendor_credit_data:
+        frappe.throw(_("No Vendor Credit data found for ID {0} in QuickBooks.").format(vendor_credit_id))
+
+    sync_token = vendor_credit_data.get("SyncToken")
+    if sync_token is None:
+        frappe.throw(_("SyncToken not found for QuickBooks Vendor Credit ID {0}.").format(vendor_credit_id))
+
+    return sync_token
+
+
+@frappe.whitelist()
+def sync_purchase_invoice_cancellation(doc, method=None):
     """
     Frappe doc_event hook for Purchase Invoice cancellation.
-    Cancels the linked Purchase Order in QuickBooks, if available.
+    Deletes the linked Bill or Vendor Credit in QuickBooks, if available.
     """
-    qb_purchase_order_id = doc.get("custom_quickbooks_bill_id")
+    cancel_purchase_invoice_on_quickbooks(doc.name)
+
+
+@frappe.whitelist()
+def cancel_purchase_invoice_on_quickbooks(purchase_invoice_name):
+    """
+    Manually or via hook: delete linked Bill/Vendor Credit in QuickBooks
+    and mark custom_is_cancelled_on_quickbooks.
+    """
+    if not purchase_invoice_name:
+        frappe.throw(_("Purchase Invoice name is required."))
+
+    doc = frappe.get_doc("Purchase Invoice", purchase_invoice_name)
 
     settings = frappe.get_single("QuickBooks Settings")
     allow_raw = getattr(settings, "allow_purchase_invoice_sync", 1)
@@ -655,37 +697,67 @@ def sync_purchase_invoice_cancellation(doc, method):
         frappe.msgprint(_("This setting is turned off. Please enable."), indicator="red")
         return
 
-    if not qb_purchase_order_id:
-        frappe.msgprint(_("No QuickBooks Purchase Order ID found for {0}. Skipping cancellation.").format(doc.name))
+    if cint(doc.get("custom_is_cancelled_on_quickbooks")):
+        frappe.msgprint(_("Purchase Invoice {0} is already marked cancelled on QuickBooks.").format(doc.name))
         return
 
-    cancel_quickbooks_purchase_order(qb_purchase_order_id)
-    frappe.msgprint(_("Purchase Invoice {0} successfully voided in QuickBooks.").format(doc.name))
+    if doc.is_return:
+        qb_vendor_credit_id = doc.get("custom_quickbooks_debitnote_id")
+        if not qb_vendor_credit_id:
+            frappe.msgprint(_("No QuickBooks Vendor Credit ID found for {0}. Skipping cancellation.").format(doc.name))
+            return
+
+        cancel_quickbooks_vendor_credit(qb_vendor_credit_id)
+        mark_purchase_invoice_cancelled_on_quickbooks(doc.name)
+        frappe.msgprint(_("Purchase Invoice {0} successfully cancelled in QuickBooks.").format(doc.name))
+        return
+
+    qb_bill_id = doc.get("custom_quickbooks_bill_id")
+    if not qb_bill_id:
+        frappe.msgprint(_("No QuickBooks Bill ID found for {0}. Skipping cancellation.").format(doc.name))
+        return
+
+    cancel_quickbooks_bill(qb_bill_id)
+    mark_purchase_invoice_cancelled_on_quickbooks(doc.name)
+    frappe.msgprint(_("Purchase Invoice {0} successfully cancelled in QuickBooks.").format(doc.name))
+
+
+def mark_purchase_invoice_cancelled_on_quickbooks(purchase_invoice_name):
+    """Mark Purchase Invoice as cancelled in QuickBooks after successful QBO delete."""
+    fieldname = "custom_is_cancelled_on_quickbooks"
+    if not frappe.db.has_column("Purchase Invoice", fieldname):
+        return
+
+    frappe.db.set_value(
+        "Purchase Invoice",
+        purchase_invoice_name,
+        fieldname,
+        1,
+        update_modified=False,
+    )
 
 
 @frappe.whitelist()
-def cancel_quickbooks_purchase_order(purchase_order_id):
+def cancel_quickbooks_bill(bill_id):
     """
-    Cancel (void) a Purchase Order in QuickBooks by its ID.
-
-    Args:
-        purchase_order_id (str): The QuickBooks Purchase Order ID.
+    Delete a Bill in QuickBooks by its ID.
     """
     refresh_quickbooks_access_token()
 
-    if not purchase_order_id:
-        frappe.throw(_("QuickBooks Purchase Order ID is required."))
+    if not bill_id:
+        frappe.throw(_("QuickBooks Bill ID is required."))
 
     settings = frappe.get_single("QuickBooks Settings")
     access_token = settings.access_token
     realm_id = settings.quickbooks_company_id
-    base_url = settings.base_url.rstrip("/").replace("https://", "").strip("/")
-    url = f"https://{base_url}/v3/company/{realm_id}/purchaseorder?operation=delete"
+    minor_version = settings.minor_version or "75"
+    base_url = settings.base_url.rstrip("/")
+    url = f"{base_url}/v3/company/{realm_id}/bill?operation=delete&minorversion={minor_version}"
 
-    sync_token = get_quickbooks_purchase_order_sync_token(purchase_order_id)
+    sync_token = get_quickbooks_bill_sync_token(bill_id)
 
     payload = {
-        "Id": purchase_order_id,
+        "Id": bill_id,
         "SyncToken": sync_token
     }
 
@@ -695,18 +767,62 @@ def cancel_quickbooks_purchase_order(purchase_order_id):
         "Content-Type": "application/json"
     }
 
-    frappe.logger().info(f"[QuickBooks] Voiding Purchase Order {purchase_order_id} with SyncToken {sync_token}")
-    frappe.logger().info(f"[QuickBooks] Void Purchase Order Request URL: {url}")
-    frappe.logger().info(f"[QuickBooks] Void Purchase Order Payload: {payload}")
+    frappe.logger().info(f"[QuickBooks] Deleting Bill {bill_id} with SyncToken {sync_token}")
+    frappe.logger().info(f"[QuickBooks] Delete Bill Request URL: {url}")
+    frappe.logger().info(f"[QuickBooks] Delete Bill Payload: {payload}")
 
     try:
         response = requests.post(url, headers=headers, json=payload)
         response.raise_for_status()
-        frappe.logger().info(f"[QuickBooks] Void Purchase Order Response: {response.text}")
+        frappe.logger().info(f"[QuickBooks] Delete Bill Response: {response.text}")
     except requests.RequestException as e:
-        frappe.throw(_("Failed to cancel Purchase Order in QuickBooks. Error: {0}").format(str(e)))
+        frappe.throw(_("Failed to cancel Bill in QuickBooks. Error: {0}").format(str(e)))
 
-    return _("Purchase Order {0} has been successfully cancelled in QuickBooks.").format(purchase_order_id)
+    return _("Bill {0} has been successfully cancelled in QuickBooks.").format(bill_id)
+
+
+@frappe.whitelist()
+def cancel_quickbooks_vendor_credit(vendor_credit_id):
+    """
+    Delete a Vendor Credit in QuickBooks by its ID.
+    """
+    refresh_quickbooks_access_token()
+
+    if not vendor_credit_id:
+        frappe.throw(_("QuickBooks Vendor Credit ID is required."))
+
+    settings = frappe.get_single("QuickBooks Settings")
+    access_token = settings.access_token
+    realm_id = settings.quickbooks_company_id
+    minor_version = settings.minor_version or "75"
+    base_url = settings.base_url.rstrip("/")
+    url = f"{base_url}/v3/company/{realm_id}/vendorcredit?operation=delete&minorversion={minor_version}"
+
+    sync_token = get_quickbooks_vendor_credit_sync_token(vendor_credit_id)
+
+    payload = {
+        "Id": vendor_credit_id,
+        "SyncToken": sync_token
+    }
+
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+
+    frappe.logger().info(f"[QuickBooks] Deleting Vendor Credit {vendor_credit_id} with SyncToken {sync_token}")
+    frappe.logger().info(f"[QuickBooks] Delete Vendor Credit Request URL: {url}")
+    frappe.logger().info(f"[QuickBooks] Delete Vendor Credit Payload: {payload}")
+
+    try:
+        response = requests.post(url, headers=headers, json=payload)
+        response.raise_for_status()
+        frappe.logger().info(f"[QuickBooks] Delete Vendor Credit Response: {response.text}")
+    except requests.RequestException as e:
+        frappe.throw(_("Failed to cancel Vendor Credit in QuickBooks. Error: {0}").format(str(e)))
+
+    return _("Vendor Credit {0} has been successfully cancelled in QuickBooks.").format(vendor_credit_id)
 
 
 def _find_quickbooks_tax_code(company, tax_type):
@@ -1792,6 +1908,13 @@ def get_purchase_invoice_credit_item_purchase_tax_code():
     return (tax_code or "").strip() or "11"
 
 
+def get_supplier_quickbooks_currency_ref(supplier):
+    """Currency code from Supplier.custom_quickbooks_currency_ref (QBO Vendor CurrencyRef.value)."""
+    if not supplier:
+        return ""
+    return (frappe.db.get_value("Supplier", supplier, "custom_quickbooks_currency_ref") or "").strip()
+
+
 def create_quickbooks_bill(invoice):
     settings = frappe.get_single("QuickBooks Settings")
     access_token = settings.access_token
@@ -1805,6 +1928,7 @@ def create_quickbooks_bill(invoice):
 
     credit_item_code = get_purchase_invoice_credit_item_code()
     purchase_tax_code = get_purchase_invoice_credit_item_purchase_tax_code()
+    currency_ref = get_supplier_quickbooks_currency_ref(invoice.supplier)
 
     line_items = []
     for item in invoice.items:
@@ -1829,6 +1953,9 @@ def create_quickbooks_bill(invoice):
         "TxnDate": str(invoice.posting_date),
         "Line": line_items
     }
+    if currency_ref:
+        payload["CurrencyRef"] = {"value": currency_ref}
+        payload["ExchangeRate"] = float(invoice.conversion_rate or 1)
 
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -1875,6 +2002,7 @@ def sync_debit_note_to_quickbooks(invoice):
 
     credit_item_code = get_purchase_invoice_credit_item_code()
     purchase_tax_code = get_purchase_invoice_credit_item_purchase_tax_code()
+    currency_ref = get_supplier_quickbooks_currency_ref(invoice.supplier)
 
     # 🔹 Use ItemBasedExpenseLineDetail instead
     line_items = []
@@ -1901,6 +2029,9 @@ def sync_debit_note_to_quickbooks(invoice):
         "TotalAmt": abs(float(invoice.grand_total)),
         "Line": line_items
     }
+    if currency_ref:
+        payload["CurrencyRef"] = {"value": currency_ref}
+        payload["ExchangeRate"] = float(invoice.conversion_rate or 1)
 
     headers = {
         "Authorization": f"Bearer {access_token}",

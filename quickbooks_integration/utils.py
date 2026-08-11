@@ -23,6 +23,7 @@ QUICKBOOKS_AMEND_CLEAR_FIELDS = {
 		"custom_quickbooks_bill_id",
 		"custom_quickbooks_debitnote_id",
 		"custom_quickbooks_sync_status",
+		"custom_is_cancelled_on_quickbooks",
 	],
 }
 

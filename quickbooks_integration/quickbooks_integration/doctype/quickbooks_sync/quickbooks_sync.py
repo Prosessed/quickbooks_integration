@@ -1852,6 +1852,31 @@ def sync_suppliers_from_quickbooks():
 
     frappe.logger().info("[QB SYNC] Completed supplier sync job")
 
+QB_COUNTRY_CODE_ALIASES = {
+    "ARE": "AE",
+    "AUS": "AU",
+    "BEL": "BE",
+    "CAN": "CA",
+    "CHE": "CH",
+    "CHN": "CN",
+    "DEU": "DE",
+    "ESP": "ES",
+    "FRA": "FR",
+    "GBR": "GB",
+    "IND": "IN",
+    "IRL": "IE",
+    "ITA": "IT",
+    "JPN": "JP",
+    "MYS": "MY",
+    "NLD": "NL",
+    "NZL": "NZ",
+    "SGP": "SG",
+    "UK": "GB",
+    "USA": "US",
+    "ZAF": "ZA",
+}
+
+
 def create_or_update_supplier(qb_supplier):
     """Create or update supplier in ERPNext based on QuickBooks supplier data."""
 
@@ -1861,7 +1886,6 @@ def create_or_update_supplier(qb_supplier):
         return
 
     display_name = qb_supplier.get("DisplayName") or "Unknown Supplier"
-    company_name = qb_supplier.get("CompanyName") or display_name
 
     existing = frappe.db.exists("Supplier", {"custom_quickbooks_supplier_id": qb_id})
     if existing:
@@ -1871,13 +1895,455 @@ def create_or_update_supplier(qb_supplier):
         supplier = frappe.new_doc("Supplier")
         frappe.logger().info(f"[QB SYNC] Creating new supplier: {display_name} (QB ID: {qb_id})")
 
+    currency_ref = (qb_supplier.get("CurrencyRef") or {}).get("value") or ""
+
     supplier.supplier_name = display_name
     supplier.supplier_type = "Company" if qb_supplier.get("CompanyName") else "Individual"
     supplier.custom_quickbooks_supplier_id = qb_id
-    supplier.supplier_group = "All Supplier Groups"
-    supplier.territory = "All Territories"
+    if supplier.meta.has_field("custom_quickbooks_currency_ref"):
+        supplier.custom_quickbooks_currency_ref = currency_ref
+    default_supplier_group = (
+        frappe.db.get_value("Supplier Group", {"is_group": 0}, "name") or "All Supplier Groups"
+    )
+    supplier.supplier_group = default_supplier_group
+    if supplier.meta.has_field("territory"):
+        supplier.territory = "All Territories"
 
     supplier.save(ignore_permissions=True)
+
+    try:
+        map_supplier_address(supplier, qb_supplier)
+    except Exception:
+        frappe.log_error(
+            message=frappe.get_traceback(),
+            title=f"QuickBooks Supplier Address Sync Failed (QB ID: {qb_id})",
+        )
+        frappe.logger().error(
+            f"[QB SYNC] Address sync failed for supplier {display_name} (QB ID: {qb_id})"
+        )
+
+    try:
+        map_supplier_contact(supplier, qb_supplier)
+    except Exception:
+        frappe.log_error(
+            message=frappe.get_traceback(),
+            title=f"QuickBooks Supplier Contact Sync Failed (QB ID: {qb_id})",
+        )
+        frappe.logger().error(
+            f"[QB SYNC] Contact sync failed for supplier {display_name} (QB ID: {qb_id})"
+        )
+
+    return supplier
+
+
+def _get_erpnext_country(country_value):
+    """Return an ERPNext Country name for a country name or ISO code."""
+    value = str(country_value or "").strip()
+    if not value:
+        return None
+
+    if frappe.db.exists("Country", value):
+        return frappe.db.get_value("Country", value, "name")
+
+    normalized_code = value.upper()
+    normalized_code = QB_COUNTRY_CODE_ALIASES.get(normalized_code, normalized_code)
+    return frappe.db.get_value("Country", {"code": normalized_code}, "name")
+
+
+def _resolve_qb_country(raw_country):
+    """Resolve a QBO country code, falling back to configured ERPNext countries."""
+    country = _get_erpnext_country(raw_country)
+    if country:
+        return country
+
+    if raw_country:
+        frappe.logger().warning(
+            f"[QB SYNC] Unknown QuickBooks country value '{raw_country}'. "
+            "Using the configured ERPNext country."
+        )
+
+    configured_country = frappe.db.get_single_value("System Settings", "country")
+    country = _get_erpnext_country(configured_country)
+    if country:
+        return country
+
+    default_company = frappe.defaults.get_global_default("company")
+    company_country = (
+        frappe.db.get_value("Company", default_company, "country")
+        if default_company
+        else None
+    )
+    country = _get_erpnext_country(company_country)
+    if country:
+        return country
+
+    country = _get_erpnext_country("Australia")
+    if country:
+        frappe.logger().warning(
+            "[QB SYNC] No valid default country is configured. Falling back to Australia."
+        )
+        return country
+
+    country = frappe.db.get_value("Country", {}, "name", order_by="name asc")
+    if country:
+        frappe.logger().warning(
+            f"[QB SYNC] No valid default country is configured. Falling back to '{country}'."
+        )
+        return country
+
+    frappe.throw(_("Cannot sync supplier address because no ERPNext Country exists."))
+
+
+def _ensure_party_link(doc, link_doctype, link_name):
+    """Append a Dynamic Link only when the party is not already linked."""
+    link_exists = any(
+        link.link_doctype == link_doctype and link.link_name == link_name
+        for link in (doc.get("links") or [])
+    )
+    if link_exists:
+        return False
+
+    doc.append(
+        "links",
+        {
+            "link_doctype": link_doctype,
+            "link_name": link_name,
+        },
+    )
+    return True
+
+
+def _ensure_child_row(doc, child_table, fieldname, value, extra_fields=None):
+    """Append a child row only when an equal value is not already present."""
+    if not value:
+        return False
+
+    exists = any((row.get(fieldname) or "") == value for row in (doc.get(child_table) or []))
+    if exists:
+        return False
+
+    row = {fieldname: value}
+    if extra_fields:
+        row.update(extra_fields)
+    doc.append(child_table, row)
+    return True
+
+
+def _upsert_primary_email(contact, email):
+    """Update the primary email in place, or append it when missing."""
+    matching = next(
+        (row for row in (contact.email_ids or []) if (row.email_id or "").strip() == email),
+        None,
+    )
+    primary_row = next((row for row in (contact.email_ids or []) if row.is_primary), None)
+
+    if matching:
+        target = matching
+    elif primary_row:
+        primary_row.email_id = email
+        target = primary_row
+    else:
+        contact.append("email_ids", {"email_id": email, "is_primary": 1})
+        return
+
+    for row in contact.email_ids:
+        row.is_primary = 1 if row == target else 0
+
+
+def _upsert_primary_phone(contact, phone, is_mobile=False):
+    """Update the primary phone/mobile in place, or append it when missing."""
+    flag = "is_primary_mobile_no" if is_mobile else "is_primary_phone"
+    matching = next(
+        (row for row in (contact.phone_nos or []) if (row.phone or "") == phone),
+        None,
+    )
+    primary_row = next((row for row in (contact.phone_nos or []) if row.get(flag)), None)
+
+    if matching:
+        target = matching
+    elif primary_row:
+        primary_row.phone = phone
+        target = primary_row
+    else:
+        contact.append(
+            "phone_nos",
+            {
+                "phone": phone,
+                "is_primary_phone": 0 if is_mobile else 1,
+                "is_primary_mobile_no": 1 if is_mobile else 0,
+            },
+        )
+        return
+
+    for row in contact.phone_nos:
+        if row == target:
+            setattr(row, flag, 1)
+        else:
+            setattr(row, flag, 0)
+
+
+def _has_usable_bill_addr(addr_data):
+    if not addr_data or not isinstance(addr_data, dict):
+        return False
+
+    return any(
+        (addr_data.get(key) or "").strip()
+        for key in (
+            "Line1",
+            "Line2",
+            "Line3",
+            "City",
+            "PostalCode",
+            "CountrySubDivisionCode",
+            "Country",
+        )
+    )
+
+
+def _find_supplier_billing_address(supplier):
+    """Locate an existing Billing Address linked to the supplier without creating duplicates."""
+    primary = supplier.get("supplier_primary_address")
+    if primary and frappe.db.exists("Address", primary):
+        return primary
+
+    linked = frappe.db.sql(
+        """
+        SELECT a.name
+        FROM `tabAddress` a
+        INNER JOIN `tabDynamic Link` dl
+            ON dl.parent = a.name AND dl.parenttype = 'Address'
+        WHERE dl.link_doctype = 'Supplier'
+            AND dl.link_name = %s
+            AND a.address_type = 'Billing'
+            AND IFNULL(a.disabled, 0) = 0
+        ORDER BY a.creation ASC
+        LIMIT 1
+        """,
+        (supplier.name,),
+    )
+    if linked:
+        return linked[0][0]
+
+    title = f"{supplier.supplier_name} - Billing"
+    by_title = frappe.db.sql(
+        """
+        SELECT a.name
+        FROM `tabAddress` a
+        LEFT JOIN `tabDynamic Link` dl
+            ON dl.parent = a.name AND dl.parenttype = 'Address'
+        WHERE a.address_title = %s
+            AND a.address_type = 'Billing'
+            AND IFNULL(a.disabled, 0) = 0
+            AND (
+                dl.name IS NULL
+                OR (dl.link_doctype = 'Supplier' AND dl.link_name = %s)
+            )
+        ORDER BY a.creation ASC
+        LIMIT 1
+        """,
+        (title, supplier.name),
+    )
+    if by_title:
+        return by_title[0][0]
+
+    return None
+
+
+def map_supplier_address(supplier, qb_supplier):
+    """Create or update the supplier Billing Address from QuickBooks BillAddr."""
+    addr_data = qb_supplier.get("BillAddr")
+    if not _has_usable_bill_addr(addr_data):
+        return None
+
+    address_lines = [
+        (addr_data.get(f"Line{i}") or "").strip()
+        for i in range(1, 4)
+        if (addr_data.get(f"Line{i}") or "").strip()
+    ]
+    address_line1 = address_lines[0] if address_lines else "Unknown"
+    address_line2 = "\n".join(address_lines[1:]).strip() if len(address_lines) > 1 else ""
+
+    city = (addr_data.get("City") or "").strip() or "Unknown"
+    state = (addr_data.get("CountrySubDivisionCode") or "").strip() or "Unknown"
+    postal_code = (addr_data.get("PostalCode") or "").strip() or "Unknown"
+    country = _resolve_qb_country(addr_data.get("Country"))
+
+    existing_name = _find_supplier_billing_address(supplier)
+    if existing_name:
+        address = frappe.get_doc("Address", existing_name)
+    else:
+        address = frappe.new_doc("Address")
+
+    address.address_title = f"{supplier.supplier_name} - Billing"
+    address.address_type = "Billing"
+    address.address_line1 = address_line1
+    if address.meta.has_field("address_line2"):
+        address.address_line2 = address_line2
+    address.city = city
+    address.state = state
+    address.pincode = postal_code
+    address.country = country
+    address.is_primary_address = 1
+
+    _ensure_party_link(address, "Supplier", supplier.name)
+    address.save(ignore_permissions=True)
+
+    from frappe.contacts.doctype.address.address import get_address_display
+
+    address_display = get_address_display(address.as_dict())
+    values_to_update = {}
+    if supplier.supplier_primary_address != address.name:
+        values_to_update["supplier_primary_address"] = address.name
+        supplier.supplier_primary_address = address.name
+    if supplier.get("primary_address") != address_display:
+        values_to_update["primary_address"] = address_display
+
+    if values_to_update:
+        frappe.db.set_value(
+            "Supplier",
+            supplier.name,
+            values_to_update,
+            update_modified=False,
+        )
+
+    return address
+
+
+def _has_usable_supplier_contact(qb_supplier):
+    email = ((qb_supplier.get("PrimaryEmailAddr") or {}).get("Address") or "").strip()
+    phone = ((qb_supplier.get("PrimaryPhone") or {}).get("FreeFormNumber") or "").strip()
+    mobile = ((qb_supplier.get("Mobile") or {}).get("FreeFormNumber") or "").strip()
+    fax = ((qb_supplier.get("Fax") or {}).get("FreeFormNumber") or "").strip()
+    given_name = (qb_supplier.get("GivenName") or "").strip()
+    family_name = (qb_supplier.get("FamilyName") or "").strip()
+    middle_name = (qb_supplier.get("MiddleName") or "").strip()
+
+    return bool(email or phone or mobile or fax or given_name or family_name or middle_name)
+
+
+def _find_supplier_contact(supplier, first_name, last_name, email):
+    """Locate an existing Contact for the supplier using primary, email, then name."""
+    primary = supplier.get("supplier_primary_contact")
+    if primary and frappe.db.exists("Contact", primary):
+        return primary
+
+    linked_names = frappe.get_all(
+        "Dynamic Link",
+        filters={
+            "link_doctype": "Supplier",
+            "link_name": supplier.name,
+            "parenttype": "Contact",
+        },
+        pluck="parent",
+        order_by="creation asc",
+    )
+    if not linked_names:
+        return None
+
+    if email:
+        for contact_name in linked_names:
+            contact_email = frappe.db.get_value("Contact", contact_name, "email_id")
+            if (contact_email or "").strip().lower() == email.lower():
+                return contact_name
+
+            child_emails = frappe.get_all(
+                "Contact Email",
+                filters={"parent": contact_name, "email_id": email},
+                pluck="name",
+                limit=1,
+            )
+            if child_emails:
+                return contact_name
+
+    for contact_name in linked_names:
+        contact = frappe.db.get_value(
+            "Contact",
+            contact_name,
+            ["first_name", "last_name"],
+            as_dict=True,
+        )
+        if not contact:
+            continue
+        if (contact.first_name or "").strip() == (first_name or "").strip() and (
+            contact.last_name or ""
+        ).strip() == (last_name or "").strip():
+            return contact_name
+
+    return linked_names[0]
+
+
+def map_supplier_contact(supplier, qb_supplier):
+    """Create or update the supplier Contact from QuickBooks contact fields."""
+    if not _has_usable_supplier_contact(qb_supplier):
+        return None
+
+    display_name = qb_supplier.get("DisplayName") or supplier.supplier_name or "Unknown Supplier"
+    first_name = (qb_supplier.get("GivenName") or "").strip() or display_name
+    middle_name = (qb_supplier.get("MiddleName") or "").strip()
+    last_name = (qb_supplier.get("FamilyName") or "").strip()
+    email = ((qb_supplier.get("PrimaryEmailAddr") or {}).get("Address") or "").strip()
+    primary_phone = sanitize_phone_number(
+        ((qb_supplier.get("PrimaryPhone") or {}).get("FreeFormNumber") or "")
+    )
+    mobile = sanitize_phone_number(((qb_supplier.get("Mobile") or {}).get("FreeFormNumber") or ""))
+    fax = sanitize_phone_number(((qb_supplier.get("Fax") or {}).get("FreeFormNumber") or ""))
+
+    for raw_label, raw_value, sanitized in (
+        ("PrimaryPhone", ((qb_supplier.get("PrimaryPhone") or {}).get("FreeFormNumber") or ""), primary_phone),
+        ("Mobile", ((qb_supplier.get("Mobile") or {}).get("FreeFormNumber") or ""), mobile),
+        ("Fax", ((qb_supplier.get("Fax") or {}).get("FreeFormNumber") or ""), fax),
+    ):
+        if raw_value and not sanitized:
+            frappe.logger().warning(
+                f"[QB SYNC] Skipping invalid {raw_label} '{raw_value}' for supplier {supplier.name}"
+            )
+
+    existing_name = _find_supplier_contact(supplier, first_name, last_name, email)
+    if existing_name:
+        contact = frappe.get_doc("Contact", existing_name)
+    else:
+        contact = frappe.new_doc("Contact")
+
+    contact.first_name = first_name
+    contact.last_name = last_name
+    if contact.meta.has_field("middle_name"):
+        contact.middle_name = middle_name
+    contact.is_primary_contact = 1
+
+    _ensure_party_link(contact, "Supplier", supplier.name)
+
+    if email:
+        _upsert_primary_email(contact, email)
+
+    if primary_phone:
+        _upsert_primary_phone(contact, primary_phone, is_mobile=False)
+
+    if mobile:
+        _upsert_primary_phone(contact, mobile, is_mobile=True)
+
+    if fax and fax not in {primary_phone, mobile}:
+        _ensure_child_row(
+            contact,
+            "phone_nos",
+            "phone",
+            fax,
+            {"is_primary_phone": 0, "is_primary_mobile_no": 0},
+        )
+
+    contact.save(ignore_permissions=True)
+
+    if supplier.supplier_primary_contact != contact.name:
+        frappe.db.set_value(
+            "Supplier",
+            supplier.name,
+            "supplier_primary_contact",
+            contact.name,
+            update_modified=False,
+        )
+        supplier.supplier_primary_contact = contact.name
+
+    return contact
+
 
 @frappe.whitelist()
 def sync_supplier_to_qbo_background():

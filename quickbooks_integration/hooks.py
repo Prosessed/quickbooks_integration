@@ -27,7 +27,8 @@ app_license = "mit"
 # include js, css files in header of desk.html
 # app_include_css = "/assets/quickbooks_integration/css/quickbooks_integration.css"
 doctype_js = {
-    "Sales Invoice": "public/js/sales_invoice.js"
+    "Sales Invoice": "public/js/sales_invoice.js",
+    "Purchase Invoice": "public/js/purchase_invoice.js",
 }
 
 
